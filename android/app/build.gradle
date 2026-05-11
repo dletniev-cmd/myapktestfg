@@ -1,0 +1,91 @@
+plugins {
+    id "com.android.application"
+    id "kotlin-android"
+    // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
+    id "dev.flutter.flutter-gradle-plugin"
+}
+
+// Подгружаем настройки релизного keystore из android/key.properties.
+// Файл лежит рядом с settings.gradle и НЕ должен попадать в публичные
+// репозитории (добавлен в .gitignore). Если файла нет — релизный билд
+// автоматически падает обратно на debug-подпись, чтобы локальный
+// `flutter run --release` продолжал работать у разработчиков без
+// настроенного keystore.
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file("key.properties")
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+}
+
+android {
+    namespace = "com.devin.github_pusher"
+    compileSdk = flutter.compileSdkVersion
+    ndkVersion = flutter.ndkVersion
+
+    compileOptions {
+        // flutter_local_notifications требует core library desugaring
+        // (использует java.time.* / java.util.Optional) — без этого
+        // R8/AGP падает на сборке release. Заодно поднимаем уровень
+        // байткода до 17, чтобы быть совместимыми с современным AGP.
+        coreLibraryDesugaringEnabled true
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = JavaVersion.VERSION_17
+    }
+
+    defaultConfig {
+        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
+        applicationId = "com.devin.github_pusher"
+        // You can update the following values to match your application needs.
+        // For more information, see: https://flutter.dev/to/review-gradle-config.
+        minSdk = flutter.minSdkVersion
+        targetSdk = flutter.targetSdkVersion
+        versionCode = flutter.versionCode
+        versionName = flutter.versionName
+    }
+
+    signingConfigs {
+        release {
+            if (keystoreProperties.getProperty("storeFile") != null) {
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            // Если key.properties + upload-keystore.jks на месте — подписываем
+            // релизным ключом (signingConfigs.release). Иначе fallback на
+            // debug-ключ, чтобы `flutter run --release` работал у тех, кто
+            // ещё не получил релизный keystore.
+            signingConfig = keystoreProperties.getProperty("storeFile") != null
+                ? signingConfigs.release
+                : signingConfigs.debug
+            // Включаем R8 (минификацию + tree-shaking) и сжатие ресурсов
+            // на релизе: APK получается заметно меньше, а cold-start
+            // быстрее за счёт меньшего объёма байткода, который ART
+            // обрабатывает при загрузке. ProGuard-правила для Flutter
+            // подтягиваются автоматически из getDefaultProguardFile().
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'),
+                'proguard-rules.pro'
+        }
+    }
+}
+
+flutter {
+    source = "../.."
+}
+
+dependencies {
+    // Поддержка Java 8+ API на устаревших версиях Android — нужно для
+    // flutter_local_notifications (java.time.*).
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.4'
+}
