@@ -1,16 +1,55 @@
-# github_pusher
+# sticker bot
 
-A new Flutter project.
+бот превращает кружки и видео в видео-стикеры telegram (webm vp9, 512×512, с прозрачным фоном).
 
-## Getting Started
+## как работает
 
-This project is a starting point for a Flutter application.
+- `/start` — список твоих наборов или кнопка создания
+- создание набора: название → короткая ссылка → готово
+- кидаешь кружок или видео → бот конвертирует и добавляет стикер в активный набор → присылает готовый стикер обратно
 
-A few resources to get you started if this is your first Flutter project:
+## deploy на railway
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+1. создай новый проект на [railway.app](https://railway.app)
+2. подключи этот репозиторий
+3. добавь переменную окружения `BOT_TOKEN` со своим токеном
+4. railway сам установит ffmpeg через nixpacks.toml и запустит бота
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+## локальный запуск
+
+```bash
+# установи зависимости
+pip install -r requirements.txt
+
+# создай .env из примера
+cp .env.example .env
+# впиши свой токен в .env
+
+# убедись что ffmpeg установлен
+ffmpeg -version
+
+# запуск
+python bot.py
+```
+
+## структура
+
+```
+bot.py          — точка входа
+config.py       — конфиг и env
+database.py     — sqlite через aiosqlite
+converter.py    — конвертация через ffmpeg
+states.py       — fsm состояния
+handlers/
+  start.py      — /start, создание и выбор набора
+  stickers.py   — обработка кружков и видео
+```
+
+## технические детали конвертации
+
+ffmpeg конвертирует видео в webm с кодеком vp9:
+- разрешение 512×512 (центральный кроп)
+- круговая маска с альфа-каналом (прозрачный фон за пределами круга)
+- максимум 3 секунды
+- без аудио
+- `-crf 18` — высокое качество

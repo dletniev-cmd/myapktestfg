@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>обрезать кружок</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+*, *::before, *::after {
+  box-sizing: border-box; margin: 0; padding: 0;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none; -webkit-user-select: none;
+}
+
+:root {
+  --bg:     var(--tg-theme-bg-color,           #17212b);
+  --bg2:    var(--tg-theme-secondary-bg-color, #232e3c);
+  --text:   var(--tg-theme-text-color,         #ffffff);
+  --hint:   var(--tg-theme-hint-color,         #708499);
+  --accent: var(--tg-theme-button-color,       #2b5278);
+  --accent-text: var(--tg-theme-button-text-color, #ffffff);
+  --border: rgba(255,255,255,.07);
+  --seg1: #3b82f6; --seg2: #22c55e; --seg3: #f59e0b;
+  --seg4: #ec4899; --seg5: #a78bfa;
+  --radius: 14px;
+  --font: -apple-system, 'SF Pro Display', 'Helvetica Neue', sans-serif;
+}
+
+html, body {
+  height: 100%; overflow: hidden;
+  background: var(--bg); color: var(--text);
+  font-family: var(--font);
+}
+
+.app {
+  display: flex; flex-direction: column;
+  height: 100%; height: -webkit-fill-available;
+  overflow: hidden;
+}
+
+/* ── HEADER ─────────────────────────────────────────── */
+.hdr {
+  padding: 18px 20px 0;
+  flex-shrink: 0;
+}
+.hdr-row {
+  display: flex; align-items: center; gap: 10px;
+}
+.hdr-icon {
+  font-size: 22px; line-height: 1;
+}
+.hdr-title {
+  font-size: 18px; font-weight: 700; letter-spacing: -.4px;
+}
+.hdr-sub {
+  font-size: 13px; color: var(--hint);
+  margin-top: 4px; line-height: 1.4;
+}
+.dur-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 10px;
+  background: var(--bg2);
+  border-radius: 20px;
+  font-size: 12px; color: var(--hint);
+  margin-top: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── TIMELINE ────────────────────────────────────────── */
+.tl-wrap {
+  padding: 20px 20px 0;
+  flex-shrink: 0;
+}
+
+.track {
+  position: relative; height: 60px;
+  background: var(--bg2); border-radius: var(--radius);
+  overflow: hidden; cursor: crosshair;
+  touch-action: none;
+}
+
+/* tick grid */
+.ticks {
+  position: absolute; inset: 0; pointer-events: none;
+}
+.tick {
+  position: absolute; top: 0; bottom: 0;
+  width: 1px; background: rgba(255,255,255,.05);
+}
+.tick-label {
+  position: absolute; top: 50%; transform: translateY(-50%);
+  font-size: 10px; color: var(--hint); opacity: .6;
+  font-variant-numeric: tabular-nums; pointer-events: none;
+  white-space: nowrap; padding: 0 3px;
+}
+
+/* segments on track */
+.seg-el {
+  position: absolute; top: 5px; bottom: 5px;
+  border-radius: 8px; display: flex; align-items: stretch;
+  min-width: 14px; touch-action: none;
+  transition: opacity .1s;
+}
+.seg-el.active { z-index: 10; }
+
+.seg-lh, .seg-rh {
+  width: 14px; flex-shrink: 0; cursor: ew-resize;
+  display: flex; align-items: center; justify-content: center;
+  touch-action: none;
+}
+.seg-lh::after, .seg-rh::after {
+  content: ''; width: 3px; height: 16px;
+  background: rgba(255,255,255,.7); border-radius: 2px;
+}
+.seg-lh { border-radius: 8px 0 0 8px; }
+.seg-rh { border-radius: 0 8px 8px 0; }
+
+.seg-body {
+  flex: 1; cursor: grab; touch-action: none;
+}
+.seg-body:active { cursor: grabbing; }
+
+/* time axis */
+.axis {
+  display: flex; justify-content: space-between;
+  padding: 6px 2px 0;
+  font-size: 11px; color: var(--hint);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+/* ── LIST ────────────────────────────────────────────── */
+.list-wrap {
+  flex: 1; overflow-y: auto; padding: 16px 20px 0;
+  -webkit-overflow-scrolling: touch;
+}
+
+.section-label {
+  font-size: 11px; font-weight: 600;
+  letter-spacing: .6px; text-transform: uppercase;
+  color: var(--hint); margin-bottom: 10px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+
+.seg-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 14px;
+  background: var(--bg2); border-radius: 12px;
+  margin-bottom: 7px;
+  animation: itemIn .18s cubic-bezier(.34,1.56,.64,1) both;
+}
+@keyframes itemIn {
+  from { opacity: 0; transform: translateY(6px) scale(.97); }
+  to   { opacity: 1; transform: none; }
+}
+
+.seg-dot {
+  width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0;
+}
+.seg-info { flex: 1; }
+.seg-range {
+  font-size: 14px; font-variant-numeric: tabular-nums; font-weight: 500;
+}
+.seg-dur {
+  font-size: 12px; color: var(--hint); margin-top: 1px;
+}
+.del-btn {
+  background: none; border: none; cursor: pointer;
+  color: var(--hint); font-size: 16px;
+  padding: 6px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  transition: background .1s;
+}
+.del-btn:active { background: rgba(255,255,255,.08); }
+
+.add-btn {
+  width: 100%; padding: 11px 14px;
+  background: none;
+  border: 1.5px dashed rgba(255,255,255,.12);
+  border-radius: 12px; color: var(--accent-text);
+  font-size: 14px; font-family: inherit;
+  cursor: pointer; display: flex;
+  align-items: center; gap: 8px;
+  margin-top: 2px; margin-bottom: 16px;
+  opacity: .85;
+}
+.add-btn:active { opacity: .5; }
+.add-btn .plus {
+  width: 20px; height: 20px; border-radius: 50%;
+  background: var(--accent); display: flex;
+  align-items: center; justify-content: center;
+  font-size: 14px; font-weight: 700; line-height: 1;
+  flex-shrink: 0;
+}
+
+.empty {
+  padding: 28px 0; text-align: center;
+  color: var(--hint); font-size: 14px; line-height: 1.7;
+}
+.empty-icon { font-size: 32px; margin-bottom: 8px; }
+
+/* ── BOTTOM ──────────────────────────────────────────── */
+.bottom {
+  flex-shrink: 0;
+  padding: 12px 20px;
+  padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+}
+.main-btn {
+  width: 100%; padding: 15px;
+  background: var(--accent); color: var(--accent-text);
+  border: none; border-radius: 13px;
+  font-size: 16px; font-weight: 600; font-family: inherit;
+  cursor: pointer; letter-spacing: -.2px;
+  transition: opacity .12s, transform .08s;
+}
+.main-btn:active { opacity: .75; transform: scale(.98); }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <div class="hdr">
+    <div class="hdr-row">
+      <span class="hdr-icon">✂️</span>
+      <span class="hdr-title">обрезать кружок</span>
+    </div>
+    <div class="hdr-sub">тапни на шкале чтобы добавить фрагмент</div>
+    <div class="dur-chip" id="durChip">⏱ 0:00</div>
+  </div>
+
+  <div class="tl-wrap">
+    <div class="track" id="track">
+      <div class="ticks" id="ticks"></div>
+    </div>
+    <div class="axis">
+      <span>0:00</span>
+      <span id="midLbl"></span>
+      <span id="endLbl"></span>
+    </div>
+  </div>
+
+  <div class="list-wrap">
+    <div class="section-label">
+      <span>фрагменты</span>
+      <span id="cntLbl"></span>
+    </div>
+    <div id="segList"></div>
+    <button class="add-btn" id="addBtn" onclick="addAuto()">
+      <span class="plus">+</span>
+      <span>добавить фрагмент</span>
+    </button>
+  </div>
+
+  <div class="bottom">
+    <button class="main-btn" id="mainBtn" onclick="submit()">продолжить без обрезки</button>
+  </div>
+
+</div>
+<script>
+'use strict';
+
+// ── Telegram init ─────────────────────────────────────────────────────────────
+const tg = window.Telegram?.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+
+// ── Params ────────────────────────────────────────────────────────────────────
+const qp    = new URLSearchParams(location.search);
+const TOTAL = Math.max(0.5, parseFloat(qp.get('duration') || '10'));
+const KEY   = qp.get('key') || '';
+const MAX_D = 2.9;
+const MAX_N = 5;
+const COLS  = ['--seg1','--seg2','--seg3','--seg4','--seg5'];
+
+let segs = [], uid = 0, drag = null;
+
+// ── Fmt ───────────────────────────────────────────────────────────────────────
+const fmt = s => {
+  s = Math.max(0, s);
+  const m = Math.floor(s / 60);
+  return m + ':' + ((s % 60).toFixed(1)).padStart(4, '0');
+};
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const col   = id => `var(${COLS[id % COLS.length]})`;
+
+// ── Static labels ─────────────────────────────────────────────────────────────
+document.getElementById('durChip').textContent = '⏱ ' + fmt(TOTAL);
+document.getElementById('endLbl').textContent  = fmt(TOTAL);
+document.getElementById('midLbl').textContent  = fmt(TOTAL / 2);
+
+// ── Ticks ─────────────────────────────────────────────────────────────────────
+(function buildTicks() {
+  const step = TOTAL > 60 ? 15 : TOTAL > 20 ? 5 : TOTAL > 8 ? 2 : 1;
+  const tc = document.getElementById('ticks');
+  for (let t = step; t < TOTAL; t += step) {
+    const d = document.createElement('div');
+    d.className = 'tick';
+    d.style.left = (t / TOTAL * 100) + '%';
+    tc.appendChild(d);
+    if (t % (step * 2) === 0) {
+      const lbl = document.createElement('div');
+      lbl.className = 'tick-label';
+      lbl.style.left = (t / TOTAL * 100) + '%';
+      lbl.textContent = fmt(t);
+      tc.appendChild(lbl);
+    }
+  }
+})();
+
+// ── Track DOM ─────────────────────────────────────────────────────────────────
+const track = document.getElementById('track');
+
+function pct(s) { return (s / TOTAL * 100).toFixed(5) + '%'; }
+
+function buildSegEl(seg) {
+  const el = document.createElement('div');
+  el.className = 'seg-el';
+  el.dataset.id = seg.id;
+  el.style.background = col(seg.id) + '33';
+  el.style.border = `2px solid ${col(seg.id)}`;
+  posEl(el, seg);
+
+  const lh = document.createElement('div'); lh.className = 'seg-lh'; lh.dataset.drag = 'L';
+  const bd = document.createElement('div'); bd.className = 'seg-body'; bd.dataset.drag = 'B';
+  const rh = document.createElement('div'); rh.className = 'seg-rh'; rh.dataset.drag = 'R';
+  el.append(lh, bd, rh);
+  return el;
+}
+
+function posEl(el, seg) {
+  el.style.left  = pct(seg.start);
+  el.style.width = pct(seg.end - seg.start);
+}
+
+function renderTrack() {
+  track.querySelectorAll('.seg-el').forEach(e => e.remove());
+  segs.forEach(s => track.appendChild(buildSegEl(s)));
+}
+
+// ── List DOM ──────────────────────────────────────────────────────────────────
+function renderList() {
+  const list = document.getElementById('segList');
+  const btn  = document.getElementById('mainBtn');
+  const add  = document.getElementById('addBtn');
+  const cnt  = document.getElementById('cntLbl');
+
+  if (segs.length === 0) {
+    list.innerHTML = `
+      <div class="empty">
+        <div class="empty-icon">🎬</div>
+        нет фрагментов<br>тапни на шкале чтобы добавить
+      </div>`;
+  } else {
+    list.innerHTML = segs.map(s => `
+      <div class="seg-item">
+        <div class="seg-dot" style="background:${col(s.id)}"></div>
+        <div class="seg-info">
+          <div class="seg-range">${fmt(s.start)} — ${fmt(s.end)}</div>
+          <div class="seg-dur">${(s.end - s.start).toFixed(1)} сек · стикер ${segs.indexOf(s)+1}</div>
+        </div>
+        <button class="del-btn" onclick="delSeg(${s.id})">✕</button>
+      </div>`).join('');
+  }
+
+  const n = segs.length;
+  cnt.textContent = n > 0 ? `${n} / ${MAX_N}` : '';
+  add.style.display = n >= MAX_N ? 'none' : 'flex';
+
+  if (n === 0) {
+    btn.textContent = 'продолжить без обрезки';
+  } else {
+    const noun = n === 1 ? 'стикер' : n < 5 ? 'стикера' : 'стикеров';
+    btn.textContent = `сделать ${n} ${noun}`;
+  }
+}
+
+function render() { renderTrack(); renderList(); }
+
+// ── Segment ops ───────────────────────────────────────────────────────────────
+function addSeg(start) {
+  if (segs.length >= MAX_N) return;
+  start = clamp(start, 0, Math.max(0, TOTAL - 0.2));
+  const end = clamp(start + Math.min(MAX_D, TOTAL), 0, TOTAL);
+  if (end <= start) return;
+  segs.push({ id: uid++, start, end });
+  render();
+}
+
+function addAuto() {
+  const sorted = [...segs].sort((a, b) => a.start - b.start);
+  let pos = 0;
+  for (const s of sorted) {
+    if (pos + 0.2 <= s.start) break;
+    pos = s.end;
+  }
+  pos = clamp(pos, 0, TOTAL - 0.2);
+  addSeg(pos);
+}
+
+function delSeg(id) {
+  segs = segs.filter(s => s.id !== id);
+  render();
+}
+
+// ── Drag ──────────────────────────────────────────────────────────────────────
+function xToSec(cx) {
+  const r = track.getBoundingClientRect();
+  return clamp((cx - r.left) / r.width, 0, 1) * TOTAL;
+}
+
+track.addEventListener('pointerdown', e => {
+  const segEl = e.target.closest('.seg-el');
+
+  if (!segEl) {
+    addSeg(xToSec(e.clientX));
+    return;
+  }
+
+  const type = (e.target.dataset.drag || e.target.closest('[data-drag]')?.dataset.drag) ?? 'B';
+  const id   = parseInt(segEl.dataset.id);
+  const seg  = segs.find(s => s.id === id);
+  if (!seg) return;
+
+  drag = { id, type, x0: e.clientX, s0: seg.start, e0: seg.end };
+  segEl.classList.add('active');
+  try { segEl.setPointerCapture(e.pointerId); } catch {}
+  e.preventDefault();
+}, { passive: false });
+
+window.addEventListener('pointermove', e => {
+  if (!drag) return;
+  const seg = segs.find(s => s.id === drag.id);
+  if (!seg) return;
+
+  const r  = track.getBoundingClientRect();
+  const dt = (e.clientX - drag.x0) / r.width * TOTAL;
+  const dur = drag.e0 - drag.s0;
+
+  if (drag.type === 'L') {
+    seg.start = clamp(drag.s0 + dt, 0, seg.end - 0.1);
+    if (seg.end - seg.start > MAX_D) seg.start = seg.end - MAX_D;
+  } else if (drag.type === 'R') {
+    seg.end = clamp(drag.e0 + dt, seg.start + 0.1, TOTAL);
+    if (seg.end - seg.start > MAX_D) seg.end = seg.start + MAX_D;
+  } else {
+    const ns = clamp(drag.s0 + dt, 0, TOTAL - dur);
+    seg.start = ns; seg.end = ns + dur;
+  }
+
+  const el = track.querySelector(`.seg-el[data-id="${drag.id}"]`);
+  if (el) posEl(el, seg);
+  renderList();
+}, { passive: true });
+
+window.addEventListener('pointerup', () => {
+  if (drag) {
+    track.querySelector(`.seg-el[data-id="${drag.id}"]`)?.classList.remove('active');
+    drag = null;
+  }
+});
+
+// ── Submit ────────────────────────────────────────────────────────────────────
+function submit() {
+  const payload = {
+    key: KEY,
+    segments: segs.length === 0
+      ? [{ start: 0, end: parseFloat(Math.min(MAX_D, TOTAL).toFixed(2)) }]
+      : segs.map(s => ({
+          start: parseFloat(s.start.toFixed(2)),
+          end:   parseFloat(s.end.toFixed(2)),
+        })),
+  };
+  const json = JSON.stringify(payload);
+  if (tg?.sendData) { tg.sendData(json); }
+  else { alert('test: ' + json); }
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+render();
+</script>
+</body>
+</html>
