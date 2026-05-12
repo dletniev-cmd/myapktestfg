@@ -159,8 +159,10 @@ class _SplashScreenState extends State<SplashScreen> {
                         ),
                 ),
               ),
-              // Кнопка смены темы — только на стадии онбординга (stage 0).
-              // На экране разрешений не показываем.
+              // Кнопка смены темы — небольшой круглый тогл в правом
+              // верхнем углу. Видна ТОЛЬКО на стадии онбординга:
+              // на экране разрешений она не нужна и визуально мешает
+              // success-чеку и заголовку "Ключ принят".
               if (_stage == 0)
                 Positioned(
                   top: 8,
@@ -195,7 +197,8 @@ class _ThemeToggleButton extends StatelessWidget {
     final pal = context.pal;
     final isDark = pal.isDark;
     final iconName = isDark ? 'solar:sun-2-bold' : 'solar:moon-stars-bold';
-    // Иконка всегда акцентного цвета — и солнце и луна.
+    // Чистая иконка без подложки/обводки — юзер просил «сама по себе».
+    // Обе темы используют акцентный цвет (как и логотип на светлой теме).
     final iconColor = AppColors.accent;
     // Хит-зона 44×44 для удобного тапа, но визуально — только иконка.
     return PressScale(
@@ -390,29 +393,39 @@ class _OnboardingStageState extends State<_OnboardingStage> {
           height: _kIconBoxSize,
           child: RepaintBoundary(
             child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 360),
+              duration: const Duration(milliseconds: 420),
               switchInCurve: Curves.easeOutCubic,
               switchOutCurve: Curves.easeInCubic,
-              // Анимация смены иконки — 3D-флип по оси X (как перелистывание
-              // карточки). Входящая иконка прилетает сверху (rotateX π/2→0),
-              // исходящая уходит вниз (rotateX 0→π/2). FadeTransition
-              // добавлен поверх, чтобы на крайних углах (anim≈0) иконка
-              // не мелькала боком — fade перекрывает «ребро» карточки.
+              // Анимация смены иконки — Rotate Spin: иконка поворачивается
+              // на 180° с одновременным уменьшением до 0.6 и fade. Старая
+              // «улетает» с поворотом и уменьшением, новая «прилетает»
+              // с противоположного угла, восстанавливая нормальный
+              // размер и ориентацию. Заметно, но не утомляет — похоже
+              // на смену темы (юзер выбрал вариант №4 из HTML-превью).
+              //
+              // Анимация включается ТОЛЬКО при смене _settledIndex
+              // (т.е. ПОСЛЕ отпускания пальца и защёлкивания страницы) —
+              // пока юзер тянет, ничего не моргает.
               transitionBuilder: (child, anim) {
-                final flip = Tween<double>(
-                  begin: 1.5708, // π/2
-                  end: 0.0,
-                ).animate(
-                  CurvedAnimation(parent: anim, curve: Curves.easeOutCubic),
+                final curved = CurvedAnimation(
+                  parent: anim,
+                  curve: Curves.easeOutCubic,
+                  reverseCurve: Curves.easeInCubic,
                 );
-                return AnimatedBuilder(
-                  animation: flip,
-                  builder: (_, c) => Transform(
-                    transform: Matrix4.rotationX(flip.value),
-                    alignment: Alignment.center,
-                    child: FadeTransition(opacity: anim, child: c),
+                final rotate = Tween<double>(
+                  begin: 0.5,
+                  end: 0.0,
+                ).animate(curved);
+                final scale = Tween<double>(
+                  begin: 0.6,
+                  end: 1.0,
+                ).animate(curved);
+                return FadeTransition(
+                  opacity: anim,
+                  child: RotationTransition(
+                    turns: rotate,
+                    child: ScaleTransition(scale: scale, child: child),
                   ),
-                  child: child,
                 );
               },
               layoutBuilder: (currentChild, previousChildren) {

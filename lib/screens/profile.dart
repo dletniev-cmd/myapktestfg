@@ -104,9 +104,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                 : 'solar:sun-2-bold',
                             key: ValueKey(pal.isDark),
                             size: 22,
-                            color: pal.isDark
-                                ? const Color(0xFFFFC15A)
-                                : AppColors.accent,
+                            color: AppColors.accent,
                           ),
                         ),
                       ),
