@@ -20,9 +20,11 @@ import 'shell.dart';
 ///
 ///   1) [_OnboardingStage] — статичный хиро: лого GitHub, заголовок и
 ///      подпись «всё, что нужно — на одном экране», sticky-кнопка
-///      «Вставить ключ» внизу. На фоне — «призрачные» описания функций
-///      с Solar-иконками, которые радиально «летят на зрителя» из-за
-///      логотипа и растворяются у краёв экрана (см. [_FeatureParticlesBackground]).
+///      «Вставить ключ» внизу. На фоне — «призрачные» подписи функций
+///      с Solar-иконками, расположенные ДВУМЯ колонками слева и справа
+///      от центра. Они стоят на фиксированных местах с лёгким наклоном
+///      (-8° слева, +8° справа) и плавно «дышат» — без полёта,
+///      масштабирования и спавна (см. [_FeatureParticlesBackground]).
 ///   2) [_PermissionsStage] — показывается после того, как токен проверен;
 ///      содержит тумблеры разрешений (уведомления, доступ к галерее)
 ///      и кнопку «Начать».
@@ -267,38 +269,15 @@ class _FadeRoute<T> extends PageRouteBuilder<T> {
 // Стадия 1. Онбординг (статичный хиро + летающие описания функций)
 // =====================================================================
 
-/// Описание одной «призрачной» фичи, которая летит на фоне:
-/// иконка из набора Solar + короткая подпись.
+/// Описание одной «призрачной» подписи на фоне: иконка из набора Solar
+/// + короткая подпись. Конкретные экземпляры хардкожены в
+/// [_kFloatingLayout] ниже (5 слева, 5 справа), вместе с их позицией,
+/// наклоном и параметрами «дыхания».
 class _GhostFeature {
   final String iconName;
   final String text;
   const _GhostFeature(this.iconName, this.text);
 }
-
-/// Пул описаний функций, которые «пролетают» через фон. Порядок
-/// и состав согласованы по прототипу.
-const List<_GhostFeature> _kGhostFeatures = [
-  _GhostFeature('solar:cloud-upload-bold',       'Заливай файлы'),
-  _GhostFeature('solar:rocket-bold',             'Запускай Actions'),
-  _GhostFeature('solar:download-square-bold',    'Скачивай APK'),
-  _GhostFeature('solar:lock-keyhole-bold',       'Только на устройстве'),
-  _GhostFeature('solar:bell-bold',               'Уведомления о сборках'),
-  _GhostFeature('solar:code-square-bold',        'Просмотр кода'),
-  _GhostFeature('solar:bug-bold',                'Баг-трекер'),
-  _GhostFeature('solar:branching-paths-up-bold', 'Ветки и коммиты'),
-  _GhostFeature('solar:folder-with-files-bold',  'Все репозитории'),
-  _GhostFeature('solar:refresh-bold',            'Перезапуск Actions'),
-  _GhostFeature('solar:gallery-add-bold',        'Скриншоты к багам'),
-  _GhostFeature('solar:star-bold',               'Избранные репо'),
-  _GhostFeature('solar:eye-bold',                'Следи за статусом'),
-  _GhostFeature('solar:document-add-bold',       'Новый файл'),
-  _GhostFeature('solar:clipboard-add-bold',      'Вставь токен'),
-  _GhostFeature('solar:bolt-bold',               'Мгновенный пуш'),
-  _GhostFeature('solar:check-circle-bold',       'Сборка готова'),
-  _GhostFeature('solar:hand-stars-bold',         'Минимум кликов'),
-  _GhostFeature('solar:server-bold',             'Actions онлайн'),
-  _GhostFeature('solar:flag-bold',               'Релизы'),
-];
 
 class _OnboardingStage extends StatelessWidget {
   final bool loading;
@@ -515,33 +494,132 @@ class _OnboardingHero extends StatelessWidget {
 }
 
 // =====================================================================
-//  Анимированный фон: «призрачные» описания функций летят на зрителя
+//  Анимированный фон: «призрачные» подписи функций плавают по бокам
 // =====================================================================
 //
-// КАК УСТРОЕНО (важно для 60 fps):
-//   • Один общий [Ticker] на весь фон. Список частиц меняется ОЧЕНЬ редко
-//     (раз в ~800ms спавнится новая, и пара раз в 10s удаляется истёкшая) —
-//     только тогда вызывается setState. Кадровые обновления (позиция,
-//     scale, alpha) идут через ValueNotifier<int> _frameTick, на который
-//     подписан каждый _ParticleView через ValueListenableBuilder —
-//     ребилдится только лист дерева одной частицы, не вся стадия.
-//   • Каждый _ParticleView обёрнут в собственный RepaintBoundary, поэтому
-//     движение одной частицы НЕ заставляет соседние слои перерисовываться.
-//   • Передний план (хиро) тоже в RepaintBoundary — он вообще не дёргается.
-//   • Альфа применяется через Color.withValues(alpha:) внутри colorFilter
-//     SVG-иконки и TextStyle.color текста. Никакого Opacity-виджета
-//     (он делает saveLayer на каждый кадр и убивает fps).
-//   • Никакой rotation/perspective — только Transform.translate + scale,
-//     которые композируются на GPU без растровых slow-path'ов.
-//   • Иконки Solar прогреты в svg.cache на старте (см. iconify_precache),
-//     первый кадр частицы НЕ парсит SVG-XML.
-//
-// ТРАЕКТОРИЯ ОДНОЙ ЧАСТИЦЫ (8–12s, t ∈ [0..1]):
-//   t = 0     → старт у центра, scale 0.35, alpha 0
-//   t ~ 0.18  → alpha достигает peak (0.55–0.85, разное для каждой)
-//   t = 0.55  → проходит «зону чтения» (scale ровно 1.0)
-//   t ~ 0.82  → alpha начинает спадать
-//   t = 1     → улетает к краю экрана (scale 1.8–2.6), alpha 0
+// КАК УСТРОЕНО (важно для 60 fps на слабых девайсах):
+//   • Подписи зафиксированы на своих местах — две колонки по бокам от
+//     центра экрана (5 слева, 5 справа). НЕТ спавна/умирания, НЕТ
+//     радиального вылета — это и убивало fps в прежней версии.
+//   • Каждая подпись наклонена один раз: слева ~ -8°, справа ~ +8°.
+//     Поворот применяется как СТАТИЧНЫЙ Transform.rotate (один раз
+//     за время жизни виджета), а не на каждый кадр.
+//   • Кадровая анимация — только лёгкий «дыхательный» drift:
+//     Transform.translate(Offset(sin(t)*~9, cos(t)*~7)). Это самая
+//     дешёвая трансформация — без saveLayer, без матричных raster slow-path.
+//   • Один общий [Ticker] на весь фон. Кадровые обновления идут через
+//     ValueNotifier<int> _frameTick, на который подписан каждый
+//     _FloatingFeatureView через ValueListenableBuilder — ребилдится
+//     только лист дерева одной подписи, не вся стадия.
+//   • Каждый _FloatingFeatureView обёрнут в собственный RepaintBoundary,
+//     поэтому drift одной подписи НЕ заставляет соседние слои
+//     перерисовываться. Хиро (лого/заголовок) тоже в RepaintBoundary.
+//   • Альфа применяется напрямую к Color.withValues(alpha:) в
+//     colorFilter Iconify и TextStyle.color — НИКАКОГО Opacity-виджета
+//     (saveLayer убивает fps).
+//   • Никакого scale per-frame, никакого spawn/despawn, никаких
+//     setState'ов на каждый тик. Только translate + alpha по sin/cos.
+
+/// Один «островок» подписи, который плавает на своём месте.
+class _FloatingFeature {
+  final _GhostFeature feature;
+  final bool onLeft;          // true → колонка слева, false → справа
+  final double topFrac;       // 0..1, относительная высота от верха фона
+  final double sideInset;     // отступ от ближайшего края (px)
+  final double tiltDeg;       // фиксированный наклон в градусах
+  final double baseAlpha;     // 0..1
+  final double driftAmpX;     // px, амплитуда плавания по X
+  final double driftAmpY;     // px, амплитуда плавания по Y
+  final double driftPeriodMs; // период колебаний по X (по Y чуть длиннее)
+  final double phase;         // 0..2π — сдвиг фазы, чтобы подписи не «дышали в такт»
+  final double fontSize;
+  const _FloatingFeature({
+    required this.feature,
+    required this.onLeft,
+    required this.topFrac,
+    required this.sideInset,
+    required this.tiltDeg,
+    required this.baseAlpha,
+    required this.driftAmpX,
+    required this.driftAmpY,
+    required this.driftPeriodMs,
+    required this.phase,
+    required this.fontSize,
+  });
+}
+
+/// Хардкод-раскладка подписей по сторонам. Подобраны:
+///   • Y-позиции так, чтобы НЕ перекрывать центральный блок «лого +
+///     заголовок + подзаголовок» (≈ 30%–55% высоты) и нижнюю
+///     sticky-кнопку (≈ ниже 78%).
+///   • Фазы рассыпаны на (0..2π) — подписи дышат вразнобой.
+///   • Тилт чередуется -8/-7° слева и +7/+8° справа — даёт лёгкую
+///     «рукописную» нерегулярность как на референсном прототипе.
+const List<_FloatingFeature> _kFloatingLayout = [
+  // ───── Левая колонка (-8°/-7°) ─────
+  _FloatingFeature(
+    feature: _GhostFeature('solar:gallery-add-bold', 'Скриншоты к багам'),
+    onLeft: true, topFrac: 0.10, sideInset: 18, tiltDeg: -8,
+    baseAlpha: 0.55, driftAmpX: 8, driftAmpY: 6, driftPeriodMs: 6400, phase: 0.0,
+    fontSize: 14.5,
+  ),
+  _FloatingFeature(
+    feature: _GhostFeature('solar:cloud-upload-bold', 'Заливай файлы'),
+    onLeft: true, topFrac: 0.24, sideInset: 12, tiltDeg: -7,
+    baseAlpha: 0.52, driftAmpX: 9, driftAmpY: 7, driftPeriodMs: 7300, phase: 1.1,
+    fontSize: 14.5,
+  ),
+  _FloatingFeature(
+    feature: _GhostFeature('solar:download-square-bold', 'Скачивай APK'),
+    onLeft: true, topFrac: 0.42, sideInset: 24, tiltDeg: -8,
+    baseAlpha: 0.50, driftAmpX: 10, driftAmpY: 6, driftPeriodMs: 6800, phase: 2.3,
+    fontSize: 14.5,
+  ),
+  _FloatingFeature(
+    feature: _GhostFeature('solar:folder-with-files-bold', 'Все репозитории'),
+    onLeft: true, topFrac: 0.57, sideInset: 14, tiltDeg: -7,
+    baseAlpha: 0.55, driftAmpX: 8, driftAmpY: 7, driftPeriodMs: 7900, phase: 3.5,
+    fontSize: 14.5,
+  ),
+  _FloatingFeature(
+    feature: _GhostFeature('solar:branching-paths-up-bold', 'Ветки и коммиты'),
+    onLeft: true, topFrac: 0.69, sideInset: 22, tiltDeg: -8,
+    baseAlpha: 0.58, driftAmpX: 9, driftAmpY: 7, driftPeriodMs: 6200, phase: 4.7,
+    fontSize: 14.5,
+  ),
+
+  // ───── Правая колонка (+7°/+8°) ─────
+  _FloatingFeature(
+    feature: _GhostFeature('solar:eye-bold', 'Следи за статусом'),
+    onLeft: false, topFrac: 0.14, sideInset: 14, tiltDeg: 8,
+    baseAlpha: 0.52, driftAmpX: 9, driftAmpY: 7, driftPeriodMs: 7200, phase: 0.6,
+    fontSize: 14.5,
+  ),
+  _FloatingFeature(
+    feature: _GhostFeature('solar:rocket-bold', 'Запускай Actions'),
+    onLeft: false, topFrac: 0.28, sideInset: 22, tiltDeg: 7,
+    baseAlpha: 0.55, driftAmpX: 8, driftAmpY: 6, driftPeriodMs: 6900, phase: 1.8,
+    fontSize: 14.5,
+  ),
+  _FloatingFeature(
+    feature: _GhostFeature('solar:bell-bold', 'Уведомления'),
+    onLeft: false, topFrac: 0.43, sideInset: 16, tiltDeg: 8,
+    baseAlpha: 0.50, driftAmpX: 10, driftAmpY: 7, driftPeriodMs: 7600, phase: 3.0,
+    fontSize: 14.5,
+  ),
+  _FloatingFeature(
+    feature: _GhostFeature('solar:star-bold', 'Избранные репо'),
+    onLeft: false, topFrac: 0.57, sideInset: 24, tiltDeg: 7,
+    baseAlpha: 0.55, driftAmpX: 8, driftAmpY: 7, driftPeriodMs: 6400, phase: 4.2,
+    fontSize: 14.5,
+  ),
+  _FloatingFeature(
+    feature: _GhostFeature('solar:check-circle-bold', 'Сборка готова'),
+    onLeft: false, topFrac: 0.69, sideInset: 16, tiltDeg: 8,
+    baseAlpha: 0.58, driftAmpX: 9, driftAmpY: 6, driftPeriodMs: 7100, phase: 5.4,
+    fontSize: 14.5,
+  ),
+];
 
 class _FeatureParticlesBackground extends StatefulWidget {
   const _FeatureParticlesBackground();
@@ -554,32 +632,19 @@ class _FeatureParticlesBackground extends StatefulWidget {
 class _FeatureParticlesBackgroundState
     extends State<_FeatureParticlesBackground>
     with SingleTickerProviderStateMixin {
-  /// Максимум одновременно живых частиц. 6 — компромисс между «фон живой»
-  /// и «не нагружаем GPU на слабых устройствах».
-  static const int _kMaxParticles = 6;
-
   late final Ticker _ticker;
-  Duration _now = Duration.zero;
-  Duration _lastSpawn = Duration.zero;
-  final math.Random _rnd = math.Random();
-  final List<_Particle> _particles = [];
-  int _featureCursor = 0;
-  int _idCursor = 0;
 
-  /// «Тик кадра» в микросекундах. Каждый _ParticleView слушает его через
-  /// ValueListenableBuilder — ребилдятся только листья (одна частица),
-  /// а не вся стадия.
+  /// «Тик кадра» в микросекундах. Каждый _FloatingFeatureView слушает
+  /// его через ValueListenableBuilder — ребилдятся только листья (одна
+  /// подпись), а не вся стадия. setState не вызывается вообще.
   final ValueNotifier<int> _frameTick = ValueNotifier<int>(0);
 
   @override
   void initState() {
     super.initState();
-    _ticker = createTicker(_onTick)..start();
-    // Pre-spawn пары частиц со сдвигом по времени — чтобы юзер увидел
-    // движение мгновенно при открытии экрана, а не пустой фон первые 2с.
-    _spawn(initialAgeFrac: 0.10);
-    _spawn(initialAgeFrac: 0.34);
-    _spawn(initialAgeFrac: 0.58);
+    _ticker = createTicker((elapsed) {
+      _frameTick.value = elapsed.inMicroseconds;
+    })..start();
   }
 
   @override
@@ -587,58 +652,6 @@ class _FeatureParticlesBackgroundState
     _ticker.dispose();
     _frameTick.dispose();
     super.dispose();
-  }
-
-  void _onTick(Duration elapsed) {
-    _now = elapsed;
-    // Спавним новую частицу каждые ~750–1000ms, если есть место. Лёгкая
-    // случайность даёт «живое» дыхание, не строго метроном.
-    final spawnGap = 750 + _rnd.nextInt(250);
-    final due = (elapsed - _lastSpawn).inMilliseconds >= spawnGap;
-    if (due && _particles.length < _kMaxParticles) {
-      _spawn();
-      _lastSpawn = elapsed;
-    }
-
-    bool removed = false;
-    for (int i = _particles.length - 1; i >= 0; i--) {
-      if (_particles[i].deadAt(_now)) {
-        _particles.removeAt(i);
-        removed = true;
-      }
-    }
-
-    // Триггерим репейнт всех живых частиц одним сигналом — но НЕ rebuild
-    // дерева. _frameTick → ValueListenableBuilder → внутренняя часть
-    // ребилдится только в листе RepaintBoundary'а.
-    _frameTick.value = elapsed.inMicroseconds;
-
-    // setState нужен ТОЛЬКО когда состав частиц меняется (новая или
-    // умершая), потому что Stack рендерит фиксированный список children.
-    if (removed && mounted) setState(() {});
-  }
-
-  void _spawn({double initialAgeFrac = 0.0}) {
-    final feature = _kGhostFeatures[_featureCursor % _kGhostFeatures.length];
-    _featureCursor++;
-    final durationMs = 8000 + _rnd.nextInt(4000);          // 8–12s
-    final angle = _rnd.nextDouble() * 2 * math.pi;          // 0..360°
-    final endScale = 1.8 + _rnd.nextDouble() * 0.8;         // 1.8–2.6
-    final peakAlpha = 0.55 + _rnd.nextDouble() * 0.30;      // 0.55–0.85
-    final fontSize = 14.0 + _rnd.nextDouble() * 2;          // 14–16
-    final startMicros =
-        _now.inMicroseconds - (durationMs * 1000 * initialAgeFrac).round();
-    _particles.add(_Particle(
-      id: _idCursor++,
-      feature: feature,
-      angle: angle,
-      durationMs: durationMs,
-      endScale: endScale,
-      peakAlpha: peakAlpha,
-      fontSize: fontSize,
-      startedAtMicros: startMicros,
-    ));
-    if (mounted) setState(() {});
   }
 
   @override
@@ -653,29 +666,14 @@ class _FeatureParticlesBackgroundState
       child: LayoutBuilder(
         builder: (context, constraints) {
           final size = Size(constraints.maxWidth, constraints.maxHeight);
-          // Радиус «вылета»: до края экрана + запас, чтобы к t=1 точно
-          // ушла за пределы видимой области.
-          final exitRadius = math.sqrt(
-                size.width * size.width + size.height * size.height,
-              ) /
-                  2 +
-              80;
-          // Точка «эмиссии» частиц — примерно центр логотипа. В Column'е
-          // хиро лого сидит на ~38% от верха SafeArea (Spacer flex 2/1 +
-          // нижний блок кнопки), поэтому смещаем точку эмиссии вверх
-          // от геометрического центра экрана.
-          final emitY = -size.height * 0.10;
           return Stack(
-            alignment: Alignment.center,
-            fit: StackFit.expand,
             clipBehavior: Clip.hardEdge,
             children: [
-              for (final p in _particles)
-                _ParticleView(
-                  key: ValueKey<int>(p.id),
-                  particle: p,
-                  exitRadius: exitRadius,
-                  emitDy: emitY,
+              for (int i = 0; i < _kFloatingLayout.length; i++)
+                _FloatingFeatureView(
+                  key: ValueKey<int>(i),
+                  data: _kFloatingLayout[i],
+                  bgSize: size,
                   iconColor: iconColor,
                   textColor: textColor,
                   frameTick: _frameTick,
@@ -688,49 +686,19 @@ class _FeatureParticlesBackgroundState
   }
 }
 
-/// Данные одной летящей «фичи». Неизменяемые поля: всё, что нужно для
-/// расчёта позиции, scale и alpha в любой момент времени, известно
-/// заранее. На каждый кадр мы просто пересчитываем t = (now-start)/dur.
-class _Particle {
-  final int id;
-  final _GhostFeature feature;
-  final double angle;
-  final int durationMs;
-  final double endScale;
-  final double peakAlpha;
-  final double fontSize;
-  final int startedAtMicros;
-  const _Particle({
-    required this.id,
-    required this.feature,
-    required this.angle,
-    required this.durationMs,
-    required this.endScale,
-    required this.peakAlpha,
-    required this.fontSize,
-    required this.startedAtMicros,
-  });
-  bool deadAt(Duration now) =>
-      (now.inMicroseconds - startedAtMicros) >= durationMs * 1000;
-}
-
-/// Виджет одной частицы. ValueListenableBuilder делает rebuild ТОЛЬКО
-/// этого внутреннего поддерева (Transform + Row(Iconify, Text)), а
+/// Виджет одной плавающей подписи. ValueListenableBuilder делает rebuild
+/// ТОЛЬКО этого внутреннего поддерева (Transform.translate + Row), а
 /// собственный RepaintBoundary локализует репейнт в отдельный слой.
-class _ParticleView extends StatelessWidget {
-  final _Particle particle;
-  final double exitRadius;
-  /// Вертикальный сдвиг точки эмиссии от центра Stack'а. Отрицательное
-  /// значение поднимает точку рождения частиц вверх (к логотипу).
-  final double emitDy;
+class _FloatingFeatureView extends StatelessWidget {
+  final _FloatingFeature data;
+  final Size bgSize;
   final Color iconColor;
   final Color textColor;
   final ValueNotifier<int> frameTick;
-  const _ParticleView({
+  const _FloatingFeatureView({
     super.key,
-    required this.particle,
-    required this.exitRadius,
-    required this.emitDy,
+    required this.data,
+    required this.bgSize,
     required this.iconColor,
     required this.textColor,
     required this.frameTick,
@@ -738,82 +706,66 @@ class _ParticleView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return RepaintBoundary(
-      child: ValueListenableBuilder<int>(
-        valueListenable: frameTick,
-        builder: (_, nowMicros, __) {
-          final dt = (nowMicros - particle.startedAtMicros) /
-              (particle.durationMs * 1000.0);
-          if (dt <= 0.0 || dt >= 1.0) return const SizedBox.shrink();
-          final t = dt;
-
-          // Радиальная позиция: квадратичный easing — у логотипа медленно,
-          // к краю экрана разгоняется (эффект «летят на тебя»).
-          final eased = t * t;
-          final r = eased * exitRadius;
-          final dx = math.cos(particle.angle) * r;
-          final dy = math.sin(particle.angle) * r;
-
-          // Масштаб: 0.35 в начале → 1.0 ровно при t=0.55 (зона чтения) →
-          // endScale в конце.
-          double scale;
-          if (t <= 0.55) {
-            scale = 0.35 + (1.0 - 0.35) * (t / 0.55);
-          } else {
-            scale = 1.0 + (particle.endScale - 1.0) * ((t - 0.55) / 0.45);
-          }
-
-          // Альфа: 0 → peak (t=0.18) → удерживаем → 0 (t=1).
-          double alpha;
-          if (t < 0.18) {
-            alpha = particle.peakAlpha * (t / 0.18);
-          } else if (t < 0.82) {
-            alpha = particle.peakAlpha;
-          } else {
-            alpha = particle.peakAlpha * (1.0 - (t - 0.82) / 0.18);
-          }
-          if (alpha <= 0.0) return const SizedBox.shrink();
-
-          // Цвета с пред-применённой альфой — НИКАКОГО Opacity-виджета
-          // (он делает saveLayer и убивает fps). colorFilter Iconify и
-          // TextStyle.color поддерживают альфа-канал нативно.
-          final ic = iconColor.withValues(alpha: alpha);
-          final tc = textColor.withValues(alpha: alpha);
-          final iconSize = particle.fontSize * 1.45;
-
-          // Stack alignment=center → этот child лежит layout-центром
-          // в центре фона. Сначала поднимаем точку эмиссии к логотипу
-          // (emitDy), потом радиально смещаем на (dx, dy). Transform.scale
-          // с alignment center (по умолчанию) скейлит вокруг центра Row'а.
-          return Transform.translate(
-            offset: Offset(dx, dy + emitDy),
-            child: Transform.scale(
-              scale: scale,
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Iconify(
-                    particle.feature.iconName,
-                    size: iconSize,
-                    color: ic,
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    particle.feature.text,
-                    maxLines: 1,
-                    softWrap: false,
-                    style: TextStyle(
-                      color: tc,
-                      fontSize: particle.fontSize,
-                      fontWeight: FontWeight.w500,
-                      letterSpacing: 0.1,
+    final top = data.topFrac * bgSize.height;
+    // Поворот фиксированный — считаем один раз снаружи ValueListenableBuilder,
+    // чтобы Transform.rotate не пересоздавался каждый кадр.
+    final tiltRad = data.tiltDeg * math.pi / 180.0;
+    final iconSize = data.fontSize * 1.45;
+    return Positioned(
+      left: data.onLeft ? data.sideInset : null,
+      right: data.onLeft ? null : data.sideInset,
+      top: top,
+      child: RepaintBoundary(
+        child: ValueListenableBuilder<int>(
+          valueListenable: frameTick,
+          builder: (_, micros, __) {
+            final tSec = micros / 1e6;
+            // Плавный «дыхательный» drift: разные периоды по X и Y
+            // дают круговой Lissajous-овал, а фазы (data.phase, *0.7)
+            // разводят соседние подписи, чтобы они не двигались синхронно.
+            final periodSec = data.driftPeriodMs / 1000.0;
+            final omegaX = 2 * math.pi / periodSec;
+            final omegaY = 2 * math.pi / (periodSec + 1.4);
+            final dx = math.sin(omegaX * tSec + data.phase) * data.driftAmpX;
+            final dy = math.cos(omegaY * tSec + data.phase * 0.7) * data.driftAmpY;
+            // Лёгкая пульсация альфы ±0.05 — чтобы подписи «жили»,
+            // но не мигали навязчиво.
+            final alpha = (data.baseAlpha +
+                    math.sin(tSec * 0.55 + data.phase) * 0.05)
+                .clamp(0.0, 1.0);
+            final ic = iconColor.withValues(alpha: alpha);
+            final tc = textColor.withValues(alpha: alpha);
+            return Transform.translate(
+              offset: Offset(dx, dy),
+              child: Transform.rotate(
+                angle: tiltRad,
+                alignment: Alignment.center,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Iconify(
+                      data.feature.iconName,
+                      size: iconSize,
+                      color: ic,
                     ),
-                  ),
-                ],
+                    const SizedBox(width: 8),
+                    Text(
+                      data.feature.text,
+                      maxLines: 1,
+                      softWrap: false,
+                      style: TextStyle(
+                        color: tc,
+                        fontSize: data.fontSize,
+                        fontWeight: FontWeight.w500,
+                        letterSpacing: 0.1,
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
-          );
-        },
+            );
+          },
+        ),
       ),
     );
   }
