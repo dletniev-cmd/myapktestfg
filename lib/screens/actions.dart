@@ -428,6 +428,20 @@ class _LiveHeadState extends State<_LiveHead>
     }
   }
 
+  /// Текст для БОЛЬШОГО заголовка слева сверху.
+  /// Приоритет: ошибка → активная сборка → обновление → дефолт.
+  /// Без `running > 0` приоритета над `loading` каждые 4 сек авто-
+  /// рефреш дёргал бы заголовок «Идёт сборка» → «Обновление…» → и
+  /// обратно — пользователь жаловался: «верхний висит идёт сборка»,
+  /// т.е. заголовок должен стабильно держаться на «Идёт сборка»,
+  /// пока есть активные раны.
+  String _titleText() {
+    if (widget.status == _LiveStatus.error) return 'Ошибка';
+    if (widget.running > 0) return 'Идёт сборка';
+    if (widget.loading) return 'Обновление…';
+    return 'Actions';
+  }
+
   String _agoText() {
     if (widget.lastUpdatedIso == null) return '';
     try {
@@ -459,14 +473,53 @@ class _LiveHeadState extends State<_LiveHead>
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  'Actions',
-                  style: TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: -.4,
-                    color: pal.text,
-                    height: 1.15,
+                // БОЛЬШОЙ заголовок: Actions / Обновление… / Идёт сборка
+                // / Ошибка. AnimatedSwitcher делает плавную cross-fade
+                // + горизонтальный size-tween (текст не «рвётся», а
+                // мягко расширяется/сжимается до новой ширины).
+                // layoutBuilder с Alignment.centerLeft прижимает оба
+                // фрейма к левому краю — иначе при разной ширине старого
+                // и нового текста они визуально «прыгают» к центру.
+                AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 340),
+                  switchInCurve: Curves.easeOutCubic,
+                  switchOutCurve: Curves.easeInCubic,
+                  layoutBuilder: (currentChild, previousChildren) => Stack(
+                    alignment: Alignment.centerLeft,
+                    children: [
+                      ...previousChildren,
+                      if (currentChild != null) currentChild,
+                    ],
+                  ),
+                  transitionBuilder: (child, anim) {
+                    return FadeTransition(
+                      opacity: anim,
+                      child: SizeTransition(
+                        sizeFactor: anim,
+                        axis: Axis.horizontal,
+                        axisAlignment: -1,
+                        child: child,
+                      ),
+                    );
+                  },
+                  child: Text(
+                    _titleText(),
+                    // ВАЖНО: ключуемся по самому тексту заголовка,
+                    // а не по статусу: статус может оставаться
+                    // `working`, пока заголовок переходит с
+                    // «Обновление…» обратно на «Идёт сборка» —
+                    // нам нужно ловить именно смену *текста*.
+                    key: ValueKey<String>(_titleText()),
+                    style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: -.4,
+                      color: pal.text,
+                      height: 1.15,
+                    ),
+                    maxLines: 1,
+                    softWrap: false,
+                    overflow: TextOverflow.fade,
                   ),
                 ),
                 const SizedBox(height: 6),
@@ -501,6 +554,16 @@ class _LiveHeadState extends State<_LiveHead>
                     ),
                     const SizedBox(width: 7),
                     Flexible(
+                      // Сабтитл: одна AnimatedSwitcher, в которой ключ
+                      // зависит ТОЛЬКО от статуса (live/working/error/
+                      // idle), но НЕ от секундного лейбла «5с назад».
+                      // Раньше ключ был `ValueKey(полный_текст)`, и
+                      // каждую секунду (когда «5с» → «6с») AnimatedSwitcher
+                      // запускал свой 280мс fade+size-анимацию — текст
+                      // «дёргался» и заметно тратил кадр на пере-layout.
+                      // Теперь cross-fade играется ТОЛЬКО при настоящей
+                      // смене статуса (live ↔ working ↔ idle), а текст
+                      // внутри обновляется тихо через ValueListenableBuilder.
                       child: AnimatedSwitcher(
                         duration: const Duration(milliseconds: 280),
                         switchInCurve: Curves.easeOutCubic,
@@ -524,21 +587,23 @@ class _LiveHeadState extends State<_LiveHead>
                             if (currentChild != null) currentChild,
                           ],
                         ),
-                        // Лейбл «X сек назад» обновляется только за счёт
-                        // _liveSecondTick, никакого setState на родителе.
-                        child: ValueListenableBuilder<int>(
-                          valueListenable: _liveSecondTick,
-                          builder: (_, __, ___) {
-                            final ago = _agoText();
-                            final t = _composeText(
-                                running: widget.running, ago: ago);
-                            return Text(
-                              t,
-                              key: ValueKey(t),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            );
-                          },
+                        child: KeyedSubtree(
+                          // Ключ — статус, а НЕ полный текст. Это и есть
+                          // фикс: «X сек назад» обновляется внутри без
+                          // re-trigger'а внешней анимации.
+                          key: ValueKey<_LiveStatus>(widget.status),
+                          child: ValueListenableBuilder<int>(
+                            valueListenable: _liveSecondTick,
+                            builder: (_, __, ___) {
+                              final ago = _agoText();
+                              return Text(
+                                _composeText(
+                                    running: widget.running, ago: ago),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              );
+                            },
+                          ),
                         ),
                       ),
                     ),

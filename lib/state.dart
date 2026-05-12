@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:photo_manager/photo_manager.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'api.dart';
@@ -226,13 +227,33 @@ class UploadTask extends ChangeNotifier {
   /// Завершает задачу успешно. Через 2.5 сек статус сбросится в idle и
   /// progress-ринг исчезнет; до этого UI показывает «Готово!» зелёной
   /// галочкой / полным кольцом.
-  void finishSuccess() {
+  ///
+  /// Параметры [uploaded] и [unchanged] нужны чтобы карточка
+  /// «Залить файлы» показала корректное сообщение в трёх случаях:
+  ///   • что-то реально залилось → «Залито в <repo>» (как раньше);
+  ///   • часть файлов совпала с тем, что уже в репо → «Залито N из M»;
+  ///   • все файлы уже актуальны, коммит не создавался →
+  ///     «Без изменений» (no-op пуш).
+  void finishSuccess({int uploaded = 0, int unchanged = 0}) {
     progress = 1.0;
-    stage = 'Готово!';
+    if (uploaded == 0 && unchanged > 0) {
+      stage = 'Без изменений';
+    } else if (unchanged > 0) {
+      stage = 'Залито $uploaded из ${uploaded + unchanged}';
+    } else {
+      stage = 'Готово!';
+    }
+    lastUploaded = uploaded;
+    lastUnchanged = unchanged;
     status = UploadStatus.done;
     notifyListeners();
     _scheduleReset(const Duration(milliseconds: 2500));
   }
+
+  /// Сколько файлов реально залилось в последний завершившийся пуш.
+  /// Используется UI карточки заливки для подписи «Залито N из M».
+  int lastUploaded = 0;
+  int lastUnchanged = 0;
 
   void finishError(String message) {
     status = UploadStatus.error;
@@ -248,6 +269,8 @@ class UploadTask extends ChangeNotifier {
       progress = 0;
       stage = '';
       errorMessage = null;
+      lastUploaded = 0;
+      lastUnchanged = 0;
       notifyListeners();
     });
   }
@@ -524,6 +547,23 @@ class AppState extends ChangeNotifier {
     final p = await SharedPreferences.getInstance();
     await p.setString('gh_token', t);
     notifyListeners();
+  }
+
+  /// Запрашивает у системы разрешение на чтение медиа-файлов (галереи).
+  /// Делаем это лениво — только когда пользователь явно тапнул свитч
+  /// «Доступ к галерее» на экране разрешений, а не сразу при заходе.
+  ///
+  /// Возвращает `true`, если разрешение выдано (или уже было). Если
+  /// пользователь откажет — фотопикер при следующем открытии всё равно
+  /// заново попросит, так что отказ здесь не блокирует приложение.
+  Future<bool> requestGalleryPermission() async {
+    try {
+      final ps =
+          await PhotoManager.requestPermissionExtend();
+      return ps.hasAccess;
+    } catch (_) {
+      return false;
+    }
   }
 
   Future<void> saveTheme() async {

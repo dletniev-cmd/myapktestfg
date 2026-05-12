@@ -23,8 +23,18 @@ import '../theme.dart';
 Future<List<Uint8List>?> pickPhotosBottomSheet(
   BuildContext context, {
   int? maxSelectable,
-}) {
-  return showModalBottomSheet<List<Uint8List>>(
+}) async {
+  // Шит закрывается СРАЗУ после тапа на галочку, возвращая список
+  // выбранных `AssetEntity`. Затем (ниже, ПОСЛЕ закрытия) мы
+  // параллельно читаем оригинальные байты выбранных фоток.
+  //
+  // Раньше шит ждал `Future.wait(originBytes)` ДО pop — это блокировало
+  // закрытие на 0.5–3 секунды (большие JPEG'и читаются по MethodChannel
+  // и сериализуются на UI-треде). Пользователь видел: тапнул галочку →
+  // спиннер → лаг → закрытие. Теперь: тапнул галочку → шит ушёл
+  // мгновенно → байты грузятся уже на следующем экране (а bug_new сам
+  // показывает прогресс энкодинга).
+  final assets = await showModalBottomSheet<List<AssetEntity>>(
     context: context,
     isScrollControlled: true,
     backgroundColor: Colors.transparent,
@@ -36,6 +46,15 @@ Future<List<Uint8List>?> pickPhotosBottomSheet(
     ),
     builder: (_) => _PhotoPickerSheet(maxSelectable: maxSelectable),
   );
+  if (assets == null) return null;
+  if (assets.isEmpty) return <Uint8List>[];
+  // Параллельная загрузка байт — порядок сохраняется через Future.wait,
+  // поэтому индексы совпадают с входным `assets`.
+  final results = await Future.wait(assets.map((a) => a.originBytes));
+  return <Uint8List>[
+    for (final b in results)
+      if (b != null) b,
+  ];
 }
 
 /// Полная высота зоны фейда у шапки. Должна совпадать с тем, как ведёт
@@ -192,25 +211,18 @@ class _PhotoPickerSheetState extends State<_PhotoPickerSheet> {
     });
   }
 
-  Future<void> _confirm() async {
+  void _confirm() {
     if (_selected.isEmpty || _busy) return;
-    setState(() => _busy = true);
-    // Загружаем оригинальные байты ВЫБРАННЫХ фото параллельно — ранее
-    // цикл `for ... await a.originBytes` ждал каждую фотку по очереди,
-    // и при выборе 5 крупных снимков подтверждение занимало 1.5–3сек,
-    // в течение которых юзер видел крутящийся индикатор без прогресса.
-    // PhotoManager умеет читать несколько ассетов одновременно, поэтому
-    // `Future.wait` сокращает время в N раз (по числу выбранных фото).
-    // Порядок гарантируется, потому что `Future.wait` сохраняет
-    // соответствие индексов входному списку.
-    final futures = _selected.map((a) => a.originBytes).toList();
-    final results = await Future.wait(futures);
-    final out = <Uint8List>[
-      for (final b in results)
-        if (b != null) b,
-    ];
-    if (!mounted) return;
-    Navigator.of(context).pop(out);
+    // МГНОВЕННО закрываем шит, возвращая список AssetEntity. Загрузку
+    // оригинальных байт берёт на себя обёртка `pickPhotosBottomSheet`
+    // УЖЕ ПОСЛЕ pop — чтобы анимация закрытия шит'а шла параллельно с
+    // чтением больших JPEG'ов из MediaStore, а не блокировалась им.
+    //
+    // Раньше тут было `setState(_busy=true)` + `await Future.wait(...)`
+    // + `pop(out)` — и юзер видел: тапнул галочку → шит замер с
+    // мини-спиннером → через 1-3сек закрылся «рывком» (потому что
+    // animation controller отдыхал, пока шёл MethodChannel-read).
+    Navigator.of(context).pop<List<AssetEntity>>(_selected.toList());
   }
 
   @override
@@ -564,15 +576,20 @@ class _PhotoCellState extends State<_PhotoCell> {
   }
 
   Future<void> _kickOff() async {
-    // Лёгкий стаггер по индексу ячейки: первые 12 ячеек тянут превью
-    // через 25мс друг за другом (0/25/50/.../275мс). Дальше — все
-    // через 300мс после открытия. Это размывает MethodChannel-нагрузку
-    // на PhotoManager и убирает «волну лагов» сразу после того как
-    // шит встал на место (когда GridView mass-mount'ит видимые ячейки).
-    final delayMs = widget.gridIndex.clamp(0, 12) * 25;
-    if (delayMs > 0) {
-      await Future<void>.delayed(Duration(milliseconds: delayMs));
-      if (!mounted) return;
+    // Лёгкий стаггер ТОЛЬКО для первых 9 ячеек (3x3 — то, что видно
+    // в первом кадре после открытия шита). 0мс / 16мс / 32мс / ... / 128мс.
+    // Все остальные ячейки (включая те, что приходят в видимую область
+    // при скролле) грузятся БЕЗ задержки. Раньше было `clamp(0, 12) * 25`
+    // — это давало 300мс задержки ВСЕМ ячейкам с индексом ≥ 12, в том
+    // числе тем, что появляются при скролле. Из-за этого при скролле
+    // фото-пикера ячейки на 300мс оставались пустыми → пользователь
+    // воспринимал это как «лаг при прокрутке».
+    if (widget.gridIndex < 9) {
+      final delayMs = widget.gridIndex * 16;
+      if (delayMs > 0) {
+        await Future<void>.delayed(Duration(milliseconds: delayMs));
+        if (!mounted) return;
+      }
     }
     // 300x300 — комфортный размер для grid-cell ~130px на 2-3x DPR.
     // Меньше — заметная пикселизация, больше — лишний декод.

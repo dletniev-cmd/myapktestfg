@@ -29,10 +29,12 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     // (например очень холодный старт) — догружаем настройки.
     // ignore: discarded_futures
     _notif.loadSettings();
-    // Также вызываем init — если разрешение POST_NOTIFICATIONS ещё не было
-    // запрошено, системный диалог появится здесь.
-    // ignore: discarded_futures
-    _notif.ensureInit();
+    // Плагин уведомлений и системный диалог `POST_NOTIFICATIONS` НЕ
+    // дёргаем здесь — это происходило слишком рано (юзер только зашёл
+    // глянуть, что есть в настройках, а ему уже вылетает диалог). Теперь
+    // запрос системного разрешения происходит ВНУТРИ `setEnabled(true)`
+    // через `ensureInit()` — то есть только когда пользователь явно
+    // тапнул свитч и включил уведомления.
   }
 
   @override

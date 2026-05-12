@@ -2,7 +2,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../iconify.dart';
-import '../notifications.dart';
 import '../state.dart';
 import '../theme.dart';
 import 'actions.dart';
@@ -56,12 +55,17 @@ class _ShellScreenState extends State<ShellScreen>
   Future<void> _bootstrap() async {
     final api = AppState.I.api;
     if (api == null) return;
-    // Инициализируем локальные уведомления и запускаем фоновый поллер
-    // GitHub Actions ранов — чтобы уведомления о событиях сборки
-    // (queued / in_progress / success / failure) приходили вне зависимости
-    // от того, на какой вкладке сейчас пользователь.
-    // ignore: discarded_futures
-    NotificationService.I.ensureInit();
+    // Запускаем фоновый поллер GitHub Actions ранов — чтобы уведомления
+    // о событиях сборки (queued / in_progress / success / failure)
+    // приходили вне зависимости от того, на какой вкладке сейчас юзер.
+    //
+    // Плагин уведомлений НЕ инициализируем здесь принудительно: дефолт
+    // `enabled = false`, и системный диалог `POST_NOTIFICATIONS` лезет
+    // только если пользователь явно включил уведомления (на экране
+    // разрешений после вставки токена или позже в настройках). Раньше
+    // `NotificationService.I.ensureInit()` стояло здесь и при первом
+    // запуске прилетал системный диалог разрешения посреди анимации
+    // перехода со splash → shell — это и были «лаги первого захода».
     AppState.I.startBuildPoller();
     try {
       // Даже если в [user] уже лежит закэшированный профиль из

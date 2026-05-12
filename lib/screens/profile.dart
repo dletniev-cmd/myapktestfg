@@ -259,6 +259,11 @@ class _BigCard extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
             ),
             const SizedBox(height: 2),
+            // Одна строка с эллипсисом — раньше maxLines: 2 позволял
+            // подзаголовку «Заливка в <длинноеИмяРепо>» переноситься
+            // на вторую строку, и эта вторая строка накладывалась на
+            // прогресс-бар внизу карточки (баг n5442). Сжимаем до одной
+            // строки — длинные названия аккуратно усекаются «...».
             Text(
               sub,
               style: TextStyle(
@@ -266,7 +271,7 @@ class _BigCard extends StatelessWidget {
                 color: pal.sub,
                 height: 1.35,
               ),
-              maxLines: 2,
+              maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
           ],
@@ -321,21 +326,52 @@ class _UploadCardState extends State<_UploadCard> {
             ? 'solar:check-circle-bold'
             : 'solar:upload-bold';
 
+    // На завершении ловим «no-op» (все файлы совпадали с репо) —
+    // pushFiles в этом случае возвращает PushResult с uploadedCount==0.
+    // Карточка показывает «Без изменений» и в title, и в sub, иначе
+    // пользователь увидит «Готово!» и подумает, что что-то залилось.
+    final noopDone =
+        done && task.lastUploaded == 0 && task.lastUnchanged > 0;
     final title = running
         ? '${(task.progress * 100).round()}%'
         : done
-            ? 'Готово!'
+            ? (noopDone ? 'Без изменений' : 'Готово!')
             : err
                 ? 'Ошибка'
                 : 'Залить файлы';
+    // Стабильный ключ для AnimatedSwitcher: меняется ТОЛЬКО на смене
+    // стадии (running → done → idle), а не на каждом изменении %.
+    // Раньше ValueKey(title) переключался каждые 1% (47%→48%→…) и
+    // AnimatedSwitcher запускал свой 220мс fade на каждый процент —
+    // отсюда «странный сдвиг текста, который вечно дёргается». Теперь
+    // во время заливки % обновляется простым setState текста, а
+    // настоящая cross-fade анимация играется только когда меняется
+    // стадия (например 99%→Готово!).
+    final stage = running
+        ? 'running'
+        : done
+            ? (noopDone ? 'done_noop' : 'done')
+            : err
+                ? 'error'
+                : 'idle';
 
     // Сабтитл: ОДНА короткая строка без имени файла — иначе текст
     // прыгает каждые пол секунды, что неприятно. Сам процесс показывает
     // прогресс-бар, статус-кода в сабтитле достаточно.
+    String doneSub() {
+      if (noopDone) {
+        return 'Файлы уже актуальны в ${_shortRepo(task.repoName)}';
+      }
+      if (task.lastUnchanged > 0) {
+        final total = task.lastUploaded + task.lastUnchanged;
+        return 'Залито ${task.lastUploaded} из $total в ${_shortRepo(task.repoName)}';
+      }
+      return 'Залито в ${_shortRepo(task.repoName)}';
+    }
     final sub = running
         ? 'Заливка в ${_shortRepo(task.repoName)}'
         : done
-            ? 'Залито в ${_shortRepo(task.repoName)}'
+            ? doneSub()
             : err
                 ? (task.errorMessage ?? 'Заливка не удалась')
                 : 'Push в существующий репо';
@@ -387,14 +423,38 @@ class _UploadCardState extends State<_UploadCard> {
                 const SizedBox(height: 10),
                 AnimatedSwitcher(
                   duration: const Duration(milliseconds: 220),
+                  // По умолчанию AnimatedSwitcher центрирует детей в
+                  // Stack'е (Alignment.center). Колонка карточки
+                  // выровнена по `CrossAxisAlignment.stretch` слева,
+                  // и из-за центровки текст «прыгал» влево-вправо при
+                  // смене стадии. layoutBuilder с Alignment.centerLeft
+                  // прижимает оба фрейма (старый/новый) к левому краю —
+                  // текст плавно проявляется, не «сдвигается».
+                  layoutBuilder: (currentChild, previousChildren) => Stack(
+                    alignment: Alignment.centerLeft,
+                    children: <Widget>[
+                      ...previousChildren,
+                      if (currentChild != null) currentChild,
+                    ],
+                  ),
                   child: Text(
                     title,
-                    key: ValueKey(title),
+                    // Ключ — стадия, а не сам текст. При обновлении %
+                    // во время заливки стадия остаётся 'running',
+                    // AnimatedSwitcher НЕ запускает свою cross-fade —
+                    // текст просто перерисовывается. Это убирает
+                    // постоянный «дёрганый» сдвиг во время заливки.
+                    key: ValueKey('title_$stage'),
                     style: TextStyle(
                       fontSize: 15,
                       fontWeight: FontWeight.w600,
                       letterSpacing: -.2,
                       color: pal.text,
+                      // Tabular figures — все цифры одинаковой ширины.
+                      // Иначе «47%»→«48%»→«49%» имеют чуть разную
+                      // ширину (1, 7, 8, 9 — пропорциональные глифы),
+                      // и при каждом обновлении % видно микро-сдвиг.
+                      fontFeatures: const [FontFeature.tabularFigures()],
                     ),
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
@@ -403,15 +463,36 @@ class _UploadCardState extends State<_UploadCard> {
                 const SizedBox(height: 2),
                 AnimatedSwitcher(
                   duration: const Duration(milliseconds: 220),
+                  // Тот же фикс центровки, что и для title — иначе
+                  // сабтитл при смене стадии «уезжает» к центру
+                  // карточки, хотя должен быть слева.
+                  layoutBuilder: (currentChild, previousChildren) => Stack(
+                    alignment: Alignment.centerLeft,
+                    children: <Widget>[
+                      ...previousChildren,
+                      if (currentChild != null) currentChild,
+                    ],
+                  ),
+                  // Одна строка с эллипсисом. Раньше maxLines: 2
+                  // позволял «Заливка в myapktestfg» переноситься на
+                  // 2-ю строку, и эта строка накладывалась на полосу
+                  // прогресса (баг n5442). Длинные имена репо теперь
+                  // обрезаются «...» — выглядит аккуратно и не лезет на
+                  // прогресс-бар.
                   child: Text(
                     sub,
-                    key: ValueKey(sub),
+                    // Ключ — стадия. Раньше ValueKey(sub) дёргал
+                    // анимацию при любом изменении строки, включая
+                    // случаи когда `_shortRepo` оставался тем же, но
+                    // менялся прогресс. Теперь анимируется только при
+                    // смене стадии.
+                    key: ValueKey('sub_$stage'),
                     style: TextStyle(
                       fontSize: 12,
                       color: pal.sub,
                       height: 1.35,
                     ),
-                    maxLines: 2,
+                    maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),

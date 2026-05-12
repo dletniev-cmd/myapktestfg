@@ -107,9 +107,11 @@ class _RunDetailScreenState extends State<RunDetailScreen> {
       await AppState.I.api!.cancelRun(AppState.I.activeRepo!.fullName, _run.id);
       HapticFeedback.mediumImpact();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Отмена отправлена')),
-      );
+      // Раньше тут показывался SnackBar «Отмена отправлена» — юзер
+      // просил убрать это «белое уведомление». Индикация теперь в
+      // самой кнопке: вместо иконки «x» пока запрос летит в
+      // GitHub и ран ещё не перешёл в cancelled — крутится
+      // маленький спиннер (см. _ActionBtn.loading).
       await _load(silent: true);
     } catch (e) {
       if (!mounted) return;
@@ -167,6 +169,12 @@ class _RunDetailScreenState extends State<RunDetailScreen> {
                               : 'solar:refresh-bold',
                           label: running ? 'Отменить' : 'Перезапустить',
                           danger: running,
+                          // Пока запрос отмены/перезапуска летит — вместо
+                          // иконки в кнопке крутится маленький спиннер
+                          // со скруглёнными концами. Это заменяет прежний
+                          // SnackBar «Отмена отправлена» (юзер просил
+                          // убрать белое уведомление).
+                          loading: _busyAction,
                           onTap: _busyAction
                               ? null
                               : (running ? _cancel : _rerun),
@@ -506,20 +514,27 @@ class _ActionBtn extends StatelessWidget {
   final String label;
   final VoidCallback? onTap;
   final bool danger;
+  /// Пока true — вместо иконки показываем круговой спиннер (16x16,
+  /// со скруглёнными концами), а кнопка переходит в неактивный
+  /// вид (onTap игнорится, текст выблякивает). Это заменяет SnackBar
+  /// «Отмена отправлена» и даёт визуальный фидбэк прямо в кнопке.
+  final bool loading;
   const _ActionBtn({
     required this.icon,
     required this.label,
     this.onTap,
     this.danger = false,
+    this.loading = false,
   });
   @override
   Widget build(BuildContext context) {
     final pal = context.pal;
     final fg = danger ? pal.red : pal.text;
     return PressScale(
-      onTap: onTap,
+      onTap: loading ? null : onTap,
       scale: 0.97,
-      child: Container(
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
         decoration: BoxDecoration(
           color: pal.cont,
@@ -528,7 +543,32 @@ class _ActionBtn extends StatelessWidget {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Iconify(icon, size: 16, color: fg),
+            // Слот фиксированного размера (16x16): либо иконка, либо
+            // спиннер. Кросс-фейд получается плавным без рывка рядомстоящего текста.
+            SizedBox(
+              width: 16,
+              height: 16,
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 220),
+                child: loading
+                    ? SizedBox(
+                        key: const ValueKey('spin'),
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: fg,
+                          strokeCap: StrokeCap.round,
+                        ),
+                      )
+                    : Iconify(
+                        icon,
+                        key: ValueKey('icon-$icon'),
+                        size: 16,
+                        color: fg,
+                      ),
+              ),
+            ),
             const SizedBox(width: 8),
             Flexible(
               child: Text(label,

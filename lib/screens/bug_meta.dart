@@ -18,31 +18,86 @@ class BugMetaScreen extends StatefulWidget {
 }
 
 class _BugMetaScreenState extends State<BugMetaScreen> {
-  void _confirm() {
+  // На время «подготовки» (вставка бага в список + перерисовка списка
+  // под нами) кнопка показывает спиннер вместо текста, и onTap
+  // блокируется — нельзя нажать «Создать» второй раз.
+  bool _busy = false;
+
+  /// Жмём «Создать» / «Готово».
+  ///
+  /// Раньше всё происходило в один кадр:
+  ///   1) `bugs.insert(0, b)`                     — вставка в список
+  ///   2) `navigator.removeRouteBelow(myRoute)`  — выкидываем BugNew без анимации
+  ///   3) `navigator.pop(true)`                   — старт slide-back анимации
+  ///   4) `AppState.touch()` → BugsScreen ребилдит ListView с новой карточкой
+  ///   5) `AppState.saveBugs()` → файловый I/O + сериализация JSON
+  ///
+  /// Всё это в один и тот же кадр = «лаг при создать», особенно если в
+  /// баге много скриншотов: при ребилде BugsScreen надо построить
+  /// карточку с миниатюрой + тегами + при этом ещё и dispose'нуть BugNew
+  /// (15 thumbnail-ов, контроллеры) — кадр уходит за 100мс, slide-back
+  /// дёргается.
+  ///
+  /// Решение по совету пользователя — добавить задержку, чтобы тяжёлая
+  /// работа УСПЕЛА сделаться ДО старта анимации:
+  ///   1. Показываем спиннер в кнопке (мгновенный фидбек).
+  ///   2. Вставляем баг в список и зовём touch() — BugsScreen ребилдится
+  ///      сейчас, пока экран Параметров ещё на месте (анимация не идёт).
+  ///   3. Дожидаемся endOfFrame + ~120мс — за это время Flutter успевает
+  ///      раскадрировать обновлённый BugsScreen в фоне.
+  ///   4. Удаляем BugNew из стека и pop() — slide-back анимация
+  ///      запускается уже с готовым контентом снизу, без джанка.
+  ///   5. saveBugs() — отложен на время анимации (300мс), чтобы файловый
+  ///      I/O не конкурировал с анимацией за UI-тред.
+  Future<void> _confirm() async {
+    if (_busy) return;
     final b = widget.bug;
+
+    if (!widget.isCreate) {
+      // Режим редактирования: ничего тяжёлого не происходит, идём как
+      // раньше — мгновенный pop + touch + saveBugs.
+      Navigator.of(context).pop();
+      AppState.I.touch();
+      AppState.I.saveBugs();
+      return;
+    }
+
+    setState(() => _busy = true);
+
+    // 1) Вставляем баг и сразу нотифицируем — BugsScreen начинает
+    //    перестраиваться, пока мы ещё на месте.
+    AppState.I.bugs.insert(0, b);
+    AppState.I.touch();
+
+    // 2) Ждём конца текущего кадра — Flutter должен УСПЕТЬ применить
+    //    setState и сделать layout/paint обновлённого BugsScreen.
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted) return;
+
+    // 3) Дополнительная короткая пауза — на «толстых» баг-репортах
+    //    (15 скринов, длинный заголовок) первый layout BugsScreen
+    //    может занять 2-3 кадра. 120мс с запасом покрывает это.
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    if (!mounted) return;
+
+    // 4) Теперь, когда список под нами уже отрисован — стартуем
+    //    slide-back. Анимация идёт по «холодному» дереву виджетов,
+    //    без джанка.
     final navigator = Navigator.of(context);
     final myRoute = ModalRoute.of(context);
-    if (widget.isCreate) {
-      AppState.I.bugs.insert(0, b);
-      if (myRoute != null) {
-        navigator.removeRouteBelow(myRoute);
-      }
-      navigator.pop(true);
-    } else {
-      navigator.pop();
+    if (myRoute != null) {
+      navigator.removeRouteBelow(myRoute);
     }
-    // touch() ВЫЗЫВАЕМ СРАЗУ — список багов под нами начинает
-    // перерисовываться параллельно со slide-back анимацией. Когда
-    // экран докатывается до места — пользователь УЖЕ видит новый/
-    // обновлённый баг в списке. Раньше тут было либо
-    // Future.delayed(650мс), либо route.completed.then(...) — в обоих
-    // случаях ощущалось как «лаг при создать», т.к. между концом
-    // анимации и появлением бага в списке был провал.
-    //
-    // saveBugs() — асинхронный I/O + base64 в isolate (compute), не
-    // блокирует UI; пускаем сразу, без await.
-    AppState.I.touch();
-    AppState.I.saveBugs();
+    navigator.pop(true);
+
+    // 5) Сохранение в файл — асинхронно, после окончания анимации.
+    //    300мс = ~ время slide-back (280мс) + небольшой запас. Если
+    //    юзер успеет убить приложение за этот микро-промежуток — баг
+    //    не сохранится, но он всё ещё в `AppState.bugs` в памяти, так
+    //    что это компромисс ради плавной анимации.
+    Future<void>.delayed(const Duration(milliseconds: 300), () {
+      AppState.I.saveBugs();
+    });
   }
 
   @override
@@ -92,9 +147,14 @@ class _BugMetaScreenState extends State<BugMetaScreen> {
               const SizedBox(height: 22),
 
               PushButton(
+                // Пока готовим вставку и ждём перерисовку BugsScreen —
+                // показываем спиннер в кнопке (как в `Создаём…` в
+                // new_repo.dart). Текст не меняется, чтобы не «прыгал»
+                // в этот короткий промежуток.
                 label: widget.isCreate ? 'Создать' : 'Готово',
-                icon: 'solar:check-circle-bold',
-                onTap: _confirm,
+                icon: _busy ? null : 'solar:check-circle-bold',
+                loading: _busy,
+                onTap: _busy ? null : _confirm,
               ),
                 ],
               ),

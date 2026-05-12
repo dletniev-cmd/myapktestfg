@@ -4,23 +4,34 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../api.dart';
 import '../iconify.dart';
-import '../navigation.dart';
+import '../notifications.dart';
 import '../state.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 import 'shell.dart';
 
+/// Экран входа.
+///
+/// Состоит из двух стадий, между которыми переключаемся внутри одного
+/// Scaffold'а (через AnimatedSwitcher):
+///
+///   1) [_OnboardingStage] — свайп-онбординг из пяти страниц (логотип
+///      GitHub + четыре описания фич) с точками-индикаторами внизу и
+///      sticky-кнопкой «Вставить ключ».
+///   2) [_PermissionsStage] — показывается после того, как токен проверен;
+///      содержит тумблеры разрешений (уведомления, доступ к галерее)
+///      и кнопку «Начать».
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
   @override
   State<SplashScreen> createState() => _SplashScreenState();
 }
 
-class _SplashScreenState extends State<SplashScreen>
-    with SingleTickerProviderStateMixin {
+class _SplashScreenState extends State<SplashScreen> {
+  // Стадии: 0 — онбординг + вставка ключа, 1 — разрешения.
+  int _stage = 0;
   bool _loading = false;
   String _error = '';
-  bool _success = false;
 
   Future<void> _pasteToken() async {
     if (_loading) return;
@@ -39,7 +50,8 @@ class _SplashScreenState extends State<SplashScreen>
         return;
       }
       // быстрая валидация: ghp_, gho_, ghs_, ghu_, ghr_, github_pat_
-      final ok = RegExp(r'^(ghp|gho|ghs|ghu|ghr)_|^github_pat_').hasMatch(raw);
+      final ok =
+          RegExp(r'^(ghp|gho|ghs|ghu|ghr)_|^github_pat_').hasMatch(raw);
       if (!ok) {
         setState(() {
           _loading = false;
@@ -56,23 +68,49 @@ class _SplashScreenState extends State<SplashScreen>
       // ignore: discarded_futures
       AppState.I.saveUser();
       AppState.I.touch();
+      // Параллельно с показом экрана разрешений греем тяжёлые ресурсы,
+      // чтобы ShellScreen открывался по уже готовым данным.
+      // ignore: discarded_futures
+      _warmUpForShell(api, user.avatarUrl);
       if (!mounted) return;
       setState(() {
-        _success = true;
         _loading = false;
+        _stage = 1;
       });
-      await Future.delayed(const Duration(milliseconds: 600));
-      if (!mounted) return;
-      Navigator.of(context).pushAndRemoveUntil(
-        SlideRoute(child: const ShellScreen()),
-        (_) => false,
-      );
     } catch (e) {
       setState(() {
         _loading = false;
-        _error = 'Не удалось войти: ${e.toString().replaceAll('Exception: ', '')}';
+        _error =
+            'Не удалось войти: ${e.toString().replaceAll('Exception: ', '')}';
       });
     }
+  }
+
+  /// Прогрев данных для ShellScreen — пока пользователь смотрит на экран
+  /// разрешений и решает что включать, мы фоном тянем профиль/репо/аватарку.
+  Future<void> _warmUpForShell(GhApi api, String avatarUrl) async {
+    if (avatarUrl.isNotEmpty && mounted) {
+      try {
+        await precacheImage(NetworkImage(avatarUrl), context);
+      } catch (_) {}
+    }
+    try {
+      final repos = await api.myRepos();
+      if (!mounted) return;
+      AppState.I.repos = repos;
+      AppState.I.activeRepo ??= repos.isNotEmpty ? repos.first : null;
+      // ignore: discarded_futures
+      AppState.I.saveRepos();
+    } catch (_) {
+      // Молча игнорируем — Shell сделает свой запрос и покажет ошибку.
+    }
+  }
+
+  void _finishToShell() {
+    Navigator.of(context).pushAndRemoveUntil(
+      _FadeRoute(child: const ShellScreen()),
+      (_) => false,
+    );
   }
 
   @override
@@ -81,144 +119,691 @@ class _SplashScreenState extends State<SplashScreen>
     return Scaffold(
       backgroundColor: pal.bg,
       body: SafeArea(
-        child: Stack(
-          children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24),
-              child: Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  children: [
-                    SizedBox(
-                      width: 180,
-                      height: 180,
-                      child: Center(
-                        child: Iconify('mdi:github',
-                            size: 170, color: pal.text),
-                      ),
-                    ),
-                    const SizedBox(height: 28),
-                    Text(
-                      'GitHub Pusher',
-                      style: TextStyle(
-                        fontSize: 28,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: -.5,
-                        color: pal.text,
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 280),
-                      child: Text(
-                        'Заливай файлы, отслеживай Actions и скачивай APK прямо с телефона.',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          fontSize: 15,
-                          color: pal.sub,
-                          height: 1.5,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 28),
-                    PressScale(
-                      onTap: _loading ? null : _pasteToken,
-                      scale: 0.96,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 28, vertical: 16),
-                        decoration: BoxDecoration(
-                          color: _success
-                              ? AppColors.green
-                              : AppColors.accent,
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            if (_loading)
-                              const SizedBox(
-                                width: 22,
-                                height: 22,
-                                child: CircularProgressIndicator(
-                                    color: Colors.white,
-                                    strokeWidth: 2.4,
-                                    strokeCap: StrokeCap.round),
-                              )
-                            else
-                              Iconify(
-                                _success
-                                    ? 'solar:check-circle-bold'
-                                    : 'solar:clipboard-add-bold',
-                                size: 22,
-                                color: Colors.white,
-                              ),
-                            const SizedBox(width: 10),
-                            Text(
-                              _success
-                                  ? 'Готово'
-                                  : (_loading ? 'Проверяем…' : 'Вставить ключ'),
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 16,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-                    PressScale(
-                      onTap: () => launchUrl(
-                        Uri.parse(
-                            'https://github.com/settings/tokens/new?scopes=repo,delete_repo,workflow&description=GitHub%20Pusher'),
-                        mode: LaunchMode.externalApplication,
-                      ),
-                      scale: 0.97,
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Iconify('solar:link-bold',
-                              size: 16, color: AppColors.accent),
-                          const SizedBox(width: 6),
-                          Text(
-                            'Получить токен на GitHub',
-                            style: TextStyle(
-                              color: AppColors.accent,
-                              fontSize: 14,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-                    SizedBox(
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 360),
+          switchInCurve: Curves.easeOutCubic,
+          switchOutCurve: Curves.easeInCubic,
+          transitionBuilder: (child, anim) {
+            final slide = Tween<Offset>(
+              begin: const Offset(0.06, 0),
+              end: Offset.zero,
+            ).animate(anim);
+            return FadeTransition(
+              opacity: anim,
+              child: SlideTransition(position: slide, child: child),
+            );
+          },
+          child: _stage == 0
+              ? _OnboardingStage(
+                  key: const ValueKey('onb'),
+                  loading: _loading,
+                  error: _error,
+                  onPaste: _pasteToken,
+                )
+              : _PermissionsStage(
+                  key: const ValueKey('perm'),
+                  onStart: _finishToShell,
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Fade-переход для splash → shell. Используем именно здесь (а не общий
+/// `SlideRoute`), потому что первый кадр ShellScreen тяжёлый: внутри
+/// IndexedStack с ProfileScreen, который читает AppState и строит
+/// карточку профиля + действия + плитки. Со slide-анимацией каждый
+/// кадр заставлял Flutter полностью раскадрировать это дерево в новой
+/// позиции; с fade — дерево рисуется один раз и потом меняется только
+/// альфа композитного слоя, что в разы дешевле.
+class _FadeRoute<T> extends PageRouteBuilder<T> {
+  _FadeRoute({required Widget child})
+      : super(
+          opaque: true,
+          transitionDuration: const Duration(milliseconds: 320),
+          reverseTransitionDuration: const Duration(milliseconds: 320),
+          pageBuilder: (_, __, ___) => child,
+          transitionsBuilder: (_, anim, __, child) {
+            final curved = CurvedAnimation(
+              parent: anim,
+              curve: Curves.easeOut,
+            );
+            return FadeTransition(opacity: curved, child: child);
+          },
+        );
+}
+
+// =====================================================================
+// Стадия 1. Онбординг (свайп-страницы + sticky-кнопка)
+// =====================================================================
+
+class _OnbPage {
+  final String icon;
+  final double iconSize;
+  final String title;
+  final String sub;
+  const _OnbPage({
+    required this.icon,
+    required this.title,
+    required this.sub,
+    this.iconSize = 130,
+  });
+}
+
+const List<_OnbPage> _onbPages = [
+  _OnbPage(
+    icon: 'mdi:github',
+    iconSize: 150,
+    title: 'GitHub Pusher',
+    sub: 'Свайпни, чтобы узнать что умеет приложение.',
+  ),
+  _OnbPage(
+    icon: 'solar:cloud-upload-bold',
+    title: 'Заливай файлы',
+    sub:
+        'Прямо с телефона отправляй файлы в любой свой репозиторий — без коммитов вручную.',
+  ),
+  _OnbPage(
+    icon: 'solar:rocket-bold',
+    title: 'Запускай Actions',
+    sub:
+        'Следи за статусом сборок и перезапускай их одним тапом прямо из приложения.',
+  ),
+  _OnbPage(
+    icon: 'solar:download-bold',
+    title: 'Скачивай APK',
+    sub:
+        'Артефакты сборки доступны сразу — устанавливай новый билд без перехода в браузер.',
+  ),
+  _OnbPage(
+    icon: 'solar:lock-keyhole-bold',
+    title: 'Только на устройстве',
+    sub:
+        'Токен хранится локально и не отправляется на сторонние серверы. Полный контроль остаётся у вас.',
+  ),
+];
+
+class _OnboardingStage extends StatefulWidget {
+  final bool loading;
+  final String error;
+  final Future<void> Function() onPaste;
+  const _OnboardingStage({
+    super.key,
+    required this.loading,
+    required this.error,
+    required this.onPaste,
+  });
+  @override
+  State<_OnboardingStage> createState() => _OnboardingStageState();
+}
+
+class _OnboardingStageState extends State<_OnboardingStage> {
+  late final PageController _pc = PageController();
+  double _page = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _pc.addListener(_onScroll);
+  }
+
+  void _onScroll() {
+    final p = _pc.hasClients ? (_pc.page ?? 0).toDouble() : 0.0;
+    if ((p - _page).abs() > 0.001) setState(() => _page = p);
+  }
+
+  @override
+  void dispose() {
+    _pc.removeListener(_onScroll);
+    _pc.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = context.pal;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 8, 24, 16),
+      child: Column(
+        children: [
+          // Свайпаемые страницы — занимают всё доступное вертикальное
+          // пространство выше кнопки.
+          Expanded(
+            child: PageView.builder(
+              controller: _pc,
+              itemCount: _onbPages.length,
+              physics: const BouncingScrollPhysics(),
+              itemBuilder: (_, i) {
+                // Дистанция от текущей странички до этой [-1..0..1].
+                // Используем для плавного fade + лёгкого scale иконки.
+                final delta = (i - _page).clamp(-1.0, 1.0);
+                final dist = delta.abs();
+                final opacity = (1.0 - dist).clamp(0.0, 1.0);
+                final scale = 1.0 - dist * 0.06;
+                return Opacity(
+                  opacity: opacity,
+                  child: Transform.scale(
+                    scale: scale,
+                    child: _OnbPageView(page: _onbPages[i]),
+                  ),
+                );
+              },
+            ),
+          ),
+          // Точки-индикаторы. Активная вытягивается в полоску.
+          _Dots(count: _onbPages.length, position: _page),
+          const SizedBox(height: 18),
+          // Кнопка «Вставить ключ».
+          PressScale(
+            onTap: widget.loading ? null : () => widget.onPaste(),
+            scale: 0.97,
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              decoration: BoxDecoration(
+                color: AppColors.accent,
+                borderRadius: BorderRadius.circular(18),
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.accent.withValues(alpha: 0.20),
+                    blurRadius: 20,
+                    offset: const Offset(0, 8),
+                  ),
+                ],
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (widget.loading)
+                    const SizedBox(
+                      width: 22,
                       height: 22,
-                      child: Text(
-                        _error,
-                        style: const TextStyle(
-                            color: AppColors.red, fontSize: 13),
-                        textAlign: TextAlign.center,
+                      child: CircularProgressIndicator(
+                        color: Colors.white,
+                        strokeWidth: 2.4,
+                        strokeCap: StrokeCap.round,
                       ),
+                    )
+                  else
+                    const Iconify(
+                      'solar:clipboard-add-bold',
+                      size: 22,
+                      color: Colors.white,
                     ),
-                  ],
-                ),
+                  const SizedBox(width: 10),
+                  Text(
+                    widget.loading ? 'Проверяем…' : 'Вставить ключ',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
               ),
             ),
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 16,
+          ),
+          const SizedBox(height: 14),
+          // Ссылка «Получить токен на GitHub» под кнопкой.
+          PressScale(
+            onTap: () => launchUrl(
+              Uri.parse(
+                'https://github.com/settings/tokens/new?scopes=repo,delete_repo,workflow&description=GitHub%20Pusher',
+              ),
+              mode: LaunchMode.externalApplication,
+            ),
+            scale: 0.97,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Iconify(
+                    'solar:link-bold',
+                    size: 16,
+                    color: AppColors.accent,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    'Получить токен на GitHub',
+                    style: TextStyle(
+                      color: AppColors.accent,
+                      fontSize: 14,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            height: 22,
+            child: Text(
+              widget.error,
+              style: const TextStyle(
+                color: AppColors.red,
+                fontSize: 13,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Text(
+              'Ваш токен хранится только на устройстве',
+              style: TextStyle(color: pal.sub, fontSize: 12),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _OnbPageView extends StatelessWidget {
+  final _OnbPage page;
+  const _OnbPageView({required this.page});
+  @override
+  Widget build(BuildContext context) {
+    final pal = context.pal;
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        // Иконка без подложки — берёт цвет text (на тёмной теме — белый).
+        SizedBox(
+          width: page.iconSize + 30,
+          height: page.iconSize + 30,
+          child: Center(
+            child: Iconify(
+              page.icon,
+              size: page.iconSize,
+              color: pal.text,
+            ),
+          ),
+        ),
+        const SizedBox(height: 28),
+        Text(
+          page.title,
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: 26,
+            fontWeight: FontWeight.w700,
+            letterSpacing: -.5,
+            color: pal.text,
+          ),
+        ),
+        const SizedBox(height: 12),
+        ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 320),
+          child: Text(
+            page.sub,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 15,
+              color: pal.sub,
+              height: 1.5,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _Dots extends StatelessWidget {
+  final int count;
+  /// Дробная позиция страницы (0..count-1). Активная точка плавно
+  /// перетягивается между соседями.
+  final double position;
+  const _Dots({required this.count, required this.position});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        for (int i = 0; i < count; i++) ...[
+          if (i > 0) const SizedBox(width: 8),
+          _SingleDot(active: (i - position).abs().clamp(0.0, 1.0)),
+        ],
+      ],
+    );
+  }
+}
+
+class _SingleDot extends StatelessWidget {
+  /// 0 — это активная страница, 1 — соседняя. Промежуточные значения
+  /// дают плавное «дыхание» при свайпе.
+  final double active;
+  const _SingleDot({required this.active});
+  @override
+  Widget build(BuildContext context) {
+    final pal = context.pal;
+    // 0 -> «полоска» (active), 1 -> «обычная точка» (inactive).
+    final t = 1.0 - active;
+    final width = 7 + 16 * t; // 7..23
+    final col = Color.lerp(
+      pal.sub.withValues(alpha: 0.32),
+      AppColors.accent,
+      t,
+    )!;
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
+      width: width,
+      height: 7,
+      decoration: BoxDecoration(
+        color: col,
+        borderRadius: BorderRadius.circular(8),
+      ),
+    );
+  }
+}
+
+// =====================================================================
+// Стадия 2. Разрешения + кнопка «Начать»
+// =====================================================================
+
+class _PermissionsStage extends StatefulWidget {
+  final VoidCallback onStart;
+  const _PermissionsStage({super.key, required this.onStart});
+  @override
+  State<_PermissionsStage> createState() => _PermissionsStageState();
+}
+
+class _PermissionsStageState extends State<_PermissionsStage> {
+  /// Локальные галки. Реальное системное разрешение Android запрашиваем
+  /// только когда юзер ВКЛЮЧИЛ свитч (а не сразу при заходе) — это
+  /// убирает «лаги» первого захода, когда сразу после готово выскакивал
+  /// системный диалог разрешений посреди анимации.
+  bool _notif = false;
+  bool _photos = false;
+  bool _busy = false;
+
+  Future<void> _toggleNotif(bool v) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    if (v) {
+      // Включаем — инициализируем плагин и запрашиваем системное
+      // разрешение POST_NOTIFICATIONS. Если юзер откажет — оставляем
+      // включёнными в нашем стейте всё равно: при следующей попытке
+      // показать уведомление Android просто не покажет, мы это
+      // обработаем без падений.
+      final granted = await NotificationService.I.requestSystemPermission();
+      await NotificationService.I.setEnabled(true);
+      if (!granted && mounted) {
+        // Сразу даём фидбек, что системно отклонено — но в нашем
+        // стейте всё равно ON, чтобы пользователь мог зайти в системные
+        // настройки и разрешить вручную.
+      }
+    } else {
+      await NotificationService.I.setEnabled(false);
+    }
+    if (!mounted) return;
+    setState(() {
+      _notif = v;
+      _busy = false;
+    });
+  }
+
+  Future<void> _togglePhotos(bool v) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    if (v) {
+      // Запрашиваем системное разрешение на чтение медиа через
+      // photo_manager. Если откажут — оставляем переключатель ON
+      // в локальном стейте, потому что в любом случае при попытке
+      // открыть пикер мы заново запросим разрешение.
+      await AppState.I.requestGalleryPermission();
+    }
+    if (!mounted) return;
+    setState(() {
+      _photos = v;
+      _busy = false;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = context.pal;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 8, 24, 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const SizedBox(height: 8),
+          // Большой success-чек сверху.
+          Center(
+            child: Container(
+              width: 96,
+              height: 96,
+              decoration: BoxDecoration(
+                color: AppColors.green.withValues(alpha: 0.14),
+                shape: BoxShape.circle,
+              ),
+              alignment: Alignment.center,
+              child: const Iconify(
+                'solar:check-circle-bold',
+                size: 56,
+                color: AppColors.green,
+              ),
+            ),
+          ),
+          const SizedBox(height: 22),
+          Text(
+            'Ключ принят',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 24,
+              fontWeight: FontWeight.w700,
+              letterSpacing: -.4,
+              color: pal.text,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Настройте разрешения, которые нужны прямо сейчас. Их можно изменить в любой момент в настройках.',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 14,
+              color: pal.sub,
+              height: 1.45,
+            ),
+          ),
+          const SizedBox(height: 28),
+          // Группа тумблеров.
+          _PermTile(
+            icon: 'solar:bell-bold',
+            title: 'Уведомления',
+            sub: 'Чтобы знать о завершении сборки и загрузки',
+            value: _notif,
+            onChanged: _toggleNotif,
+            isFirst: true,
+          ),
+          _PermTile(
+            icon: 'solar:gallery-add-bold',
+            title: 'Доступ к галерее',
+            sub: 'Чтобы прикреплять скриншоты к багам',
+            value: _photos,
+            onChanged: _togglePhotos,
+            isLast: true,
+          ),
+          const Spacer(),
+          // Кнопка «Начать».
+          PressScale(
+            onTap: widget.onStart,
+            scale: 0.97,
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              decoration: BoxDecoration(
+                color: AppColors.accent,
+                borderRadius: BorderRadius.circular(18),
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.accent.withValues(alpha: 0.20),
+                    blurRadius: 20,
+                    offset: const Offset(0, 8),
+                  ),
+                ],
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                mainAxisSize: MainAxisSize.min,
+                children: const [
+                  Iconify(
+                    'solar:arrow-right-bold',
+                    size: 22,
+                    color: Colors.white,
+                  ),
+                  SizedBox(width: 10),
+                  Text(
+                    'Начать',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 4),
+        ],
+      ),
+    );
+  }
+}
+
+class _PermTile extends StatelessWidget {
+  final String icon;
+  final String title;
+  final String sub;
+  final bool value;
+  final Future<void> Function(bool) onChanged;
+  final bool isFirst;
+  final bool isLast;
+  const _PermTile({
+    required this.icon,
+    required this.title,
+    required this.sub,
+    required this.value,
+    required this.onChanged,
+    this.isFirst = false,
+    this.isLast = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = context.pal;
+    final radTop = isFirst ? const Radius.circular(16) : Radius.zero;
+    final radBot = isLast ? const Radius.circular(16) : Radius.zero;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => onChanged(!value),
+      child: Container(
+        decoration: BoxDecoration(
+          color: pal.cont,
+          borderRadius: BorderRadius.only(
+            topLeft: radTop,
+            topRight: radTop,
+            bottomLeft: radBot,
+            bottomRight: radBot,
+          ),
+          border: isLast
+              ? null
+              : Border(
+                  bottom: BorderSide(color: pal.sep, width: 0.6),
+                ),
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 36,
+              height: 36,
               child: Center(
-                child: Text(
-                  'v 1.1 · Ваш токен хранится только на устройстве',
-                  style: TextStyle(color: pal.sub, fontSize: 12),
-                ),
+                child: Iconify(icon, size: 28, color: AppColors.accent),
               ),
             ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                      color: pal.text,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    sub,
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      color: pal.sub,
+                      height: 1.35,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 10),
+            _PermSwitch(active: value),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Свитч с зелёным треком (как iOS) — отличается от ThemedSwitch
+/// акцентом «системного» вида разрешений.
+class _PermSwitch extends StatelessWidget {
+  final bool active;
+  const _PermSwitch({required this.active});
+  @override
+  Widget build(BuildContext context) {
+    final pal = context.pal;
+    const trackOn = AppColors.green;
+    final trackOff =
+        pal.isDark ? const Color(0xFF3A3A3F) : const Color(0xFFD8D8DC);
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeOutCubic,
+      width: 46,
+      height: 28,
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        color: active ? trackOn : trackOff,
+        borderRadius: BorderRadius.circular(99),
+      ),
+      child: AnimatedAlign(
+        alignment:
+            active ? Alignment.centerRight : Alignment.centerLeft,
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOutCubic,
+        child: Container(
+          width: 22,
+          height: 22,
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            shape: BoxShape.circle,
+            boxShadow: [
+              BoxShadow(
+                color: Color(0x33000000),
+                blurRadius: 4,
+                offset: Offset(0, 1),
+              ),
+            ],
+          ),
         ),
       ),
     );

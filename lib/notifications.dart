@@ -29,7 +29,15 @@ class NotificationService extends ChangeNotifier {
 
   // === Настройки (персистятся в SharedPreferences) ===
   /// Мастер-свитч: если выключен — ни одно уведомление не показывается.
-  bool enabled = true;
+  ///
+  /// **По умолчанию выключено**, чтобы при первом запуске приложение НЕ
+  /// дёргало системный диалог `POST_NOTIFICATIONS` сразу после ввода
+  /// токена (это был один из главных «лагов» при старте — диалог
+  /// прилетал прямо во время анимации перехода). Юзер сам включит
+  /// уведомления — либо на экране разрешений (после вставки ключа),
+  /// либо позже в Настройки → Уведомления. Только в этот момент мы
+  /// инициализируем плагин и запросим системное разрешение.
+  bool enabled = false;
 
   /// Уведомления о ходе/завершении сборки (GitHub Actions runs).
   bool buildEnabled = true;
@@ -43,7 +51,11 @@ class NotificationService extends ChangeNotifier {
   Future<void> loadSettings() async {
     if (_settingsLoaded) return;
     final p = await SharedPreferences.getInstance();
-    enabled = p.getBool('notif_enabled') ?? true;
+    // Дефолт `false`: уведомления выключены до тех пор, пока пользователь
+    // явно их не включит. Раньше дефолт был `true` и сразу при старте
+    // показывался системный диалог разрешения — это и были «лаги первого
+    // захода» после вставки ключа.
+    enabled = p.getBool('notif_enabled') ?? false;
     buildEnabled = p.getBool('notif_build') ?? true;
     downloadEnabled = p.getBool('notif_download') ?? true;
     _settingsLoaded = true;
@@ -55,12 +67,45 @@ class NotificationService extends ChangeNotifier {
     notifyListeners();
     final p = await SharedPreferences.getInstance();
     await p.setBool('notif_enabled', v);
-    if (!v) {
+    if (v) {
+      // При включении инициализируем плагин и просим системное
+      // разрешение POST_NOTIFICATIONS — только сейчас, а не на старте.
+      await ensureInit();
+    } else {
       // При полном выключении гасим текущие баннеры — пользователь хочет
       // тишины, а не висящий progress.
       try {
         await _plugin.cancelAll();
       } catch (_) {}
+    }
+  }
+
+  /// Запрашивает у системы разрешение `POST_NOTIFICATIONS`. Возвращает
+  /// `true`, если разрешение было выдано (или уже было выдано раньше).
+  /// Безопасно вызывать на не-Android платформах — вернёт `true` без
+  /// побочных эффектов.
+  ///
+  /// Используется на экране разрешений (после вставки ключа), чтобы
+  /// показать пользователю системный диалог только когда он явно тапнул
+  /// свитч «Уведомления», а не сразу при заходе в приложение.
+  Future<bool> requestSystemPermission() async {
+    try {
+      const android = AndroidInitializationSettings('@mipmap/ic_launcher');
+      // initialize безопасно вызывать многократно, но первый вызов
+      // ОБЯЗАН произойти до запроса разрешения.
+      if (!_inited) {
+        _inited = true;
+        await _plugin.initialize(
+          const InitializationSettings(android: android),
+        );
+      }
+      final androidImpl = _plugin.resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
+      if (androidImpl == null) return true;
+      final granted = await androidImpl.requestNotificationsPermission();
+      return granted ?? false;
+    } catch (_) {
+      return false;
     }
   }
 
@@ -83,6 +128,13 @@ class NotificationService extends ChangeNotifier {
 
   /// Инициализация плагина + запрос разрешения POST_NOTIFICATIONS.
   /// Безопасно вызывать многократно — повторно не делает ничего.
+  ///
+  /// Эта функция вызывается лениво: ТОЛЬКО когда нужно показать
+  /// уведомление (или когда пользователь включает мастер-свитч в
+  /// настройках). Никогда не вызываем при старте приложения — иначе
+  /// получим системный диалог «Разрешить уведомления?» прямо во время
+  /// анимации перехода со splash-экрана, что и было главной причиной
+  /// «лагов первого захода».
   Future<void> ensureInit() async {
     if (_inited) return;
     _inited = true;

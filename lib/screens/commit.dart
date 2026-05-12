@@ -70,17 +70,24 @@ class _CommitScreenState extends State<CommitScreen> {
     AppState.I.commitMessage = '';
     AppState.I.touch();
 
-    // Стрим прогресса. unawaited — задача живёт в фоне.
+    // Стрим прогресса. unawaited — задача живёт в фоне. pushFiles теперь
+    // возвращает [PushResult] с количеством реально залитых и пропущенных
+    // (без изменений) файлов — пробрасываем это в UploadTask, чтобы
+    // карточка заливки могла показать «Без изменений», когда все файлы
+    // уже совпадают с тем, что лежит в репо (пушим только изменённое).
     () async {
       try {
-        await api.pushFiles(
+        final res = await api.pushFiles(
           fullName: repo.fullName,
           branch: repo.defaultBranch,
           files: filesSnapshot,
           message: msg,
           onProgress: (s, p) => task.update(s, p),
         );
-        task.finishSuccess();
+        task.finishSuccess(
+          uploaded: res.uploadedCount,
+          unchanged: res.unchangedCount,
+        );
       } catch (e) {
         var msg = e.toString();
         if (msg.startsWith('Exception: ')) msg = msg.substring(11);

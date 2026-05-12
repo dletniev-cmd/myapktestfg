@@ -34,6 +34,22 @@ class _ReposScreenState extends State<ReposScreen> {
   String? _lastReposError;
   String? _lastActiveFull;
 
+  // Подписка на анимацию роута: блокируем `setState` от `_onState` во
+  // время slide-back анимации (когда экран уезжает назад), чтобы
+  // неожиданные обновления `myRepos()` не перетряхивали ListView в
+  // последние 280мс жизни экрана.
+  //
+  // Раньше тут также был флажок `_contentReady`, который ОТКЛАДЫВАЛ
+  // монтаж ListView до окончания slide-in анимации (forward). На бумаге
+  // это давало более плавную slide-in (тайлы не строились в кадр),
+  // на практике пользователь видел: тап → пустой экран → подъезд →
+  // ВНЕЗАПНО появляется список. Этот «pop» в конце как раз и
+  // воспринимался как лаг при открытии раздела. ListView с ~10
+  // _RepoTile'ами строится 6-15мс на современных устройствах, что
+  // ОК для одного кадра slide-in — поэтому теперь рендерим сразу.
+  Animation<double>? _routeAnim;
+  bool _isPopping = false;
+
   @override
   void initState() {
     super.initState();
@@ -48,7 +64,31 @@ class _ReposScreenState extends State<ReposScreen> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final anim = ModalRoute.of(context)?.animation;
+    if (!identical(anim, _routeAnim)) {
+      _routeAnim?.removeStatusListener(_routeAnimStatus);
+      _routeAnim = anim;
+      _routeAnim?.addStatusListener(_routeAnimStatus);
+    }
+  }
+
+  void _routeAnimStatus(AnimationStatus status) {
+    // `reverse` — экран уезжает назад (Navigator.pop / свайп назад).
+    // Блокируем setState от `_onState` до конца анимации (либо до
+    // dispose), чтобы поздний ответ `myRepos()` не дёргал ListView.
+    if (status == AnimationStatus.reverse) {
+      _isPopping = true;
+    } else if (status == AnimationStatus.completed ||
+        status == AnimationStatus.dismissed) {
+      _isPopping = false;
+    }
+  }
+
+  @override
   void dispose() {
+    _routeAnim?.removeStatusListener(_routeAnimStatus);
     _q.removeListener(_onQuery);
     _q.dispose();
     AppState.I.removeListener(_onState);
@@ -79,6 +119,11 @@ class _ReposScreenState extends State<ReposScreen> {
       _lastReposLoading = newLoading;
       _lastReposError = newError;
       _lastActiveFull = newActive;
+      // Если мы прямо сейчас уезжаем назад — обновляем только snapshot
+      // (чтобы он остался консистентным), но НЕ запускаем setState.
+      // ListView не пере-построится посреди slide-back анимации, и
+      // закрытие пройдёт плавно.
+      if (_isPopping) return;
       if (mounted) setState(() {});
     }
   }
@@ -120,13 +165,14 @@ class _ReposScreenState extends State<ReposScreen> {
         children: [
           Positioned.fill(
             // Баг n7281 (часть 2): после очистки кэша список репо
-            // обнуляется, и пользователь возвращается на экран — список
-            // пуст и непонятно что идёт загрузка. Раньше спиннер
-            // показывался только пока установлен глобальный
-            // `reposLoading` (из shell.dart на первом бутстрапе) — после
-            // повторного `_refresh()` он уже не вставал. Теперь
-            // показываем то же скруглённое кольцо (как в Actions), пока
-            // идёт ЛЮБАЯ загрузка списка — и глобальная, и локальная.
+            // обнуляется, и пользователь возвращается на экран —
+            // список пуст и непонятно что идёт загрузка. Раньше
+            // спиннер показывался только пока установлен глобальный
+            // `reposLoading` (из shell.dart на первом бутстрапе) —
+            // после повторного `_refresh()` он уже не вставал.
+            // Теперь показываем то же скруглённое кольцо (как в
+            // Actions), пока идёт ЛЮБАЯ загрузка списка — и
+            // глобальная, и локальная.
             child: (AppState.I.reposLoading || _refreshing) && list.isEmpty
                 ? Padding(
                     padding: EdgeInsets.only(top: topPad),

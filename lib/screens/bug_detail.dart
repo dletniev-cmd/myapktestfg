@@ -577,10 +577,22 @@ class _BdShotsGridState extends State<_BdShotsGrid> {
         final gridHeight = rows * size + (rows - 1).clamp(0, 100) * gap;
 
         if (!_allLoaded) {
-          // Placeholder с одним кольцом по центру — не рисуем сами скрины.
-          // Высота примерно как у будущей сетки (минимум одна строка),
-          // чтобы layout не «прыгал» при появлении картинок.
+          // Placeholder высотой будущей сетки — чтобы layout не
+          // «прыгал», когда картинки в неё впрыгнут.
           final h = gridHeight.clamp(size, double.infinity).toDouble();
+
+          // Во время slide-in (shotsReady=false) НЕ рисуем
+          // CircularProgressIndicator: его ticker заставляет этот
+          // SliverChildBuilderDelegate ребилдиться на каждом кадре,
+          // что добавляет нагрузки прямо в момент slide-in анимации,
+          // и при большом кол-ве скринов + длинном описании это и
+          // даёт «лаги при открытии карточки бага». Спиннер всплывает
+          // только ПОСЛЕ того как экран доехал — там он играет всего
+          // ~ 0.3-1 сек, пока декодятся картинки, и уже не мешает.
+          if (!widget.shotsReady) {
+            return SizedBox(width: c.maxWidth, height: h);
+          }
+
           return SizedBox(
             width: c.maxWidth,
             height: h,

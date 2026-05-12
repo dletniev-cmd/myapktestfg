@@ -1,6 +1,21 @@
 import 'dart:convert';
 import 'dart:typed_data';
+import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
+
+/// Считает git-blob SHA1 для байтов локально, в том же виде, как это
+/// делает git/GitHub при сохранении файла как blob. Формула:
+///   sha1("blob <length>\0" + bytes)
+/// Используется в [GitHubApi.pushFiles] для сравнения с уже лежащим в
+/// репо деревом — чтобы пушить только изменённые/новые файлы, а не
+/// всё подряд (просьба пользователя).
+String gitBlobSha1(Uint8List bytes) {
+  final header = utf8.encode('blob ${bytes.length}\u0000');
+  final full = Uint8List(header.length + bytes.length)
+    ..setRange(0, header.length, header)
+    ..setRange(header.length, header.length + bytes.length, bytes);
+  return sha1.convert(full).toString();
+}
 
 class GhUser {
   final String login;
@@ -509,14 +524,26 @@ class GhApi {
   }
 
   /// Push files: создаёт blobs, tree, commit и обновляет ref.
-  Future<void> pushFiles({
+  ///
+  /// ВАЖНО: пушит ТОЛЬКО изменённые или новые файлы, а не всё подряд.
+  /// До отправки blob'ов сравниваем локально рассчитанный git-blob SHA1
+  /// каждого файла со SHA в текущем дереве репозитория. Если содержимое
+  /// совпадает один-в-один — файл пропускается. Это убирает кучу
+  /// ненужных HTTP-запросов и «лишние» коммиты, в которых ничего не
+  /// поменялось.
+  ///
+  /// Возвращает [PushResult] с количеством реально загруженных файлов
+  /// и числом пропущенных (без изменений). Если все файлы совпадают с
+  /// текущим состоянием репо, коммит не создаётся, ref не обновляется
+  /// — это «no-op» пуш.
+  Future<PushResult> pushFiles({
     required String fullName,
     required String branch,
     required Map<String, Uint8List> files,
     required String message,
     void Function(String stage, double progress)? onProgress,
   }) async {
-    onProgress?.call('Получаем ref ветки', 0.05);
+    onProgress?.call('Получаем ref ветки', 0.04);
     final ref = await http.get(
         _u('/repos/$fullName/git/refs/heads/$branch'),
         headers: _headers);
@@ -527,16 +554,64 @@ class GhApi {
       throw Exception('Branch ref: ${ref.statusCode}');
     }
 
-    onProgress?.call('Читаем дерево', 0.1);
+    onProgress?.call('Читаем дерево', 0.08);
     final commit = await http.get(_u('/repos/$fullName/git/commits/$parent'), headers: _headers);
     final treeSha = ((jsonDecode(commit.body) as Map)['tree'] as Map)['sha'] as String;
 
+    // Тянем дерево рекурсивно — нужно знать SHA каждого файла, чтобы
+    // сравнить с локально рассчитанным и понять, что реально менялось.
+    onProgress?.call('Сверяемся с репо', 0.12);
+    final remoteShaByPath = <String, String>{};
+    final treeResp = await http.get(
+      _u('/repos/$fullName/git/trees/$treeSha?recursive=1'),
+      headers: _headers,
+    );
+    if (treeResp.statusCode == 200) {
+      final body = jsonDecode(treeResp.body) as Map;
+      final tree = (body['tree'] as List?) ?? const [];
+      for (final node in tree) {
+        if (node is! Map) continue;
+        if ((node['type'] ?? '') != 'blob') continue;
+        final path = (node['path'] ?? '').toString();
+        final sha = (node['sha'] ?? '').toString();
+        if (path.isEmpty || sha.isEmpty) continue;
+        remoteShaByPath[path] = sha;
+      }
+    }
+    // Если API вернул truncated=true (репо огромное), просто
+    // подгружаем то, что вернулось — на ненайденные файлы упадём на
+    // полную загрузку blob'а, это безопасный fallback.
+
+    // Фильтруем: оставляем только новые/изменённые файлы.
+    final changed = <String, Uint8List>{};
+    final unchanged = <String, String>{}; // path -> существующий sha
+    for (final e in files.entries) {
+      final localSha = gitBlobSha1(e.value);
+      final remoteSha = remoteShaByPath[e.key];
+      if (remoteSha != null && remoteSha == localSha) {
+        unchanged[e.key] = remoteSha;
+      } else {
+        changed[e.key] = e.value;
+      }
+    }
+
+    if (changed.isEmpty) {
+      // Нечего пушить: содержимое всех файлов уже один-в-один в репо.
+      // Возвращаем no-op результат, коммит не делаем, ref не двигаем.
+      onProgress?.call('Все файлы уже актуальны', 1.0);
+      return PushResult(
+        uploadedCount: 0,
+        unchangedCount: unchanged.length,
+        commitSha: null,
+      );
+    }
+
     final blobs = <Map<String, dynamic>>[];
     var i = 0;
-    for (final entry in files.entries) {
+    for (final entry in changed.entries) {
       i++;
       onProgress?.call(
-          'Загружаем файл ${entry.key}', 0.15 + 0.6 * (i / files.length));
+          'Загружаем ${entry.key}', 0.15 + 0.6 * (i / changed.length));
       final body = jsonEncode({
         'content': base64Encode(entry.value),
         'encoding': 'base64',
@@ -594,5 +669,36 @@ class GhApi {
       throw Exception('Update ref: ${ur.statusCode}');
     }
     onProgress?.call('Готово', 1.0);
+
+    return PushResult(
+      uploadedCount: changed.length,
+      unchangedCount: unchanged.length,
+      commitSha: newCommit,
+    );
   }
+}
+
+/// Результат вызова [GitHubApi.pushFiles]. Используется UI чтобы
+/// показать, реально ли что-то заехало в репо, или коммит был
+/// пропущен потому что все файлы и так совпадали.
+class PushResult {
+  /// Сколько blob'ов было реально создано (== число изменённых/новых
+  /// файлов в этом пуше).
+  final int uploadedCount;
+
+  /// Сколько файлов в пуше совпадало с тем, что уже лежит в репо
+  /// (их blob не создавался, время и трафик не тратились).
+  final int unchangedCount;
+
+  /// SHA нового коммита, либо null если пуш оказался no-op
+  /// (все файлы уже были актуальны).
+  final String? commitSha;
+
+  const PushResult({
+    required this.uploadedCount,
+    required this.unchangedCount,
+    required this.commitSha,
+  });
+
+  bool get noOp => uploadedCount == 0 && commitSha == null;
 }
