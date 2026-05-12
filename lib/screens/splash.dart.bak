@@ -159,14 +159,13 @@ class _SplashScreenState extends State<SplashScreen> {
                         ),
                 ),
               ),
-              // Кнопка смены темы — только на стадии онбординга (stage 0).
-              // На экране разрешений не показываем.
-              if (_stage == 0)
-                Positioned(
-                  top: 8,
-                  right: 12,
-                  child: _ThemeToggleButton(),
-                ),
+              // Кнопка смены темы — небольшой круглый тогл в правом
+              // верхнем углу, поверх всего. Виден на обеих стадиях.
+              Positioned(
+                top: 8,
+                right: 12,
+                child: _ThemeToggleButton(),
+              ),
             ],
           ),
         ),
@@ -195,8 +194,12 @@ class _ThemeToggleButton extends StatelessWidget {
     final pal = context.pal;
     final isDark = pal.isDark;
     final iconName = isDark ? 'solar:sun-2-bold' : 'solar:moon-stars-bold';
-    // Иконка всегда акцентного цвета — и солнце и луна.
-    final iconColor = AppColors.accent;
+    // Чистая иконка без подложки/обводки — юзер просил «сама по себе».
+    // В тёмной теме солнце тёплого жёлтого оттенка, в светлой — луна
+    // акцентного фиолетового (как и логотип на светлой теме).
+    final iconColor = isDark
+        ? const Color(0xFFFFC15A)
+        : AppColors.accent;
     // Хит-зона 44×44 для удобного тапа, но визуально — только иконка.
     return PressScale(
       onTap: () => AppPaletteScope.of(context).toggleTheme(),
@@ -393,26 +396,23 @@ class _OnboardingStageState extends State<_OnboardingStage> {
               duration: const Duration(milliseconds: 360),
               switchInCurve: Curves.easeOutCubic,
               switchOutCurve: Curves.easeInCubic,
-              // Анимация смены иконки — 3D-флип по оси X (как перелистывание
-              // карточки). Входящая иконка прилетает сверху (rotateX π/2→0),
-              // исходящая уходит вниз (rotateX 0→π/2). FadeTransition
-              // добавлен поверх, чтобы на крайних углах (anim≈0) иконка
-              // не мелькала боком — fade перекрывает «ребро» карточки.
+              // Новая анимация смены иконки — мягкий вертикальный
+              // slide (новая иконка прилетает снизу, старая уходит
+              // вверх) + fade. Включается ТОЛЬКО при смене
+              // _settledIndex (т.е. ПОСЛЕ отпускания пальца и
+              // защёлкивания страницы) — поэтому пока юзер тянет, ничего
+              // не моргает. Раньше был scale+easeOutBack, юзер просил
+              // другую — теперь slide-up.
               transitionBuilder: (child, anim) {
-                final flip = Tween<double>(
-                  begin: 1.5708, // π/2
-                  end: 0.0,
+                final slide = Tween<Offset>(
+                  begin: const Offset(0, 0.18),
+                  end: Offset.zero,
                 ).animate(
                   CurvedAnimation(parent: anim, curve: Curves.easeOutCubic),
                 );
-                return AnimatedBuilder(
-                  animation: flip,
-                  builder: (_, c) => Transform(
-                    transform: Matrix4.rotationX(flip.value),
-                    alignment: Alignment.center,
-                    child: FadeTransition(opacity: anim, child: c),
-                  ),
-                  child: child,
+                return FadeTransition(
+                  opacity: anim,
+                  child: SlideTransition(position: slide, child: child),
                 );
               },
               layoutBuilder: (currentChild, previousChildren) {
