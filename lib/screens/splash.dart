@@ -301,8 +301,10 @@ class _OnboardingStageState extends State<_OnboardingStage> {
     final pal = context.pal;
     return Column(
       children: [
-        // ============== ВЕРХНИЙ ВОЗДУХ — как в Telegram ==============
-        const Spacer(flex: 18),
+        // ============== ВЕРХНИЙ ВОЗДУХ ==============
+        // Вариант A: иконка+текст единой группой ровно по центру
+        // доступной области (между статус-баром и нижним блоком).
+        const Spacer(),
         // ============== ИКОНОЧНАЯ ЗОНА (фиксирована, НЕ свайпается) ==============
         // Иконка биндится на `_settledIndex`, который обновляется ТОЛЬКО
         // в `PageView.onPageChanged` (т.е. после того как палец отпущен
@@ -331,7 +333,9 @@ class _OnboardingStageState extends State<_OnboardingStage> {
             ),
           ),
         ),
-        const Spacer(flex: 3),
+        // Плотный gap между иконкой и заголовком (16px) — иконка
+        // прижата к тексту, единая группа.
+        const SizedBox(height: 16),
         // ============== ТЕКСТ (свайпается вместе с пальцем, edge-to-edge) ==============
         // PageView во всю ширину экрана — без бокового паддинга, чтобы
         // соседние страницы при свайпе уходили за край экрана.
@@ -359,7 +363,10 @@ class _OnboardingStageState extends State<_OnboardingStage> {
             },
           ),
         ),
-        const Spacer(flex: 2),
+        // Нижний воздух — flex:1, симметрично верхнему Spacer'у.
+        // За счёт двух одинаковых Spacer'ов группа иконка+текст
+        // оказывается ровно по центру свободной области.
+        const Spacer(),
         // ============== ТОЧКИ + КНОПКА + ХВОСТ ==============
         Padding(
           padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
@@ -555,7 +562,8 @@ class _OnbTextPage extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.start,
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          const SizedBox(height: 12),
+          // Внутреннего верхнего паддинга нет — gap между иконкой и
+          // заголовком задаётся снаружи (16px) ровно.
           Text(
             page.title,
             textAlign: TextAlign.center,
