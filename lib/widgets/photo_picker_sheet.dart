@@ -20,20 +20,24 @@ import '../theme.dart';
 /// Длительность переходов уеличена со стандартных 250мс до 420мс
 /// (в обратку 320мс) — на тёмном фоне дефолтные 250мс воспринимались
 /// как «резкий хлопок».
+const Duration _kSheetReverseDuration = Duration(milliseconds: 260);
+
 Future<List<Uint8List>?> pickPhotosBottomSheet(
   BuildContext context, {
   int? maxSelectable,
 }) async {
   // Шит закрывается СРАЗУ после тапа на галочку, возвращая список
-  // выбранных `AssetEntity`. Затем (ниже, ПОСЛЕ закрытия) мы
-  // параллельно читаем оригинальные байты выбранных фоток.
+  // выбранных `AssetEntity`. Только ПОСЛЕ полного завершения анимации
+  // закрытия мы начинаем читать оригинальные байты, и не залпом —
+  // а с ограничением параллелизма.
   //
-  // Раньше шит ждал `Future.wait(originBytes)` ДО pop — это блокировало
-  // закрытие на 0.5–3 секунды (большие JPEG'и читаются по MethodChannel
-  // и сериализуются на UI-треде). Пользователь видел: тапнул галочку →
-  // спиннер → лаг → закрытие. Теперь: тапнул галочку → шит ушёл
-  // мгновенно → байты грузятся уже на следующем экране (а bug_new сам
-  // показывает прогресс энкодинга).
+  // История: раньше `Future.wait(originBytes)` вызывался синхронно
+  // после `await showModalBottomSheet`. Дело в том, что Future от
+  // showModalBottomSheet резолвится как только зовётся Navigator.pop
+  // (а не после завершения reverse-анимации). То есть 15+ тяжёлых
+  // MethodChannel-вызовов стартовали ПРЯМО ВО ВРЕМЯ slide-down
+  // анимации, сериализация ответов на UI-треде давала jank.
+  // Видимый результат: «панель закрывалась лагая».
   final assets = await showModalBottomSheet<List<AssetEntity>>(
     context: context,
     isScrollControlled: true,
@@ -42,15 +46,35 @@ Future<List<Uint8List>?> pickPhotosBottomSheet(
     transitionAnimationController: AnimationController(
       vsync: Navigator.of(context),
       duration: const Duration(milliseconds: 380),
-      reverseDuration: const Duration(milliseconds: 260),
+      reverseDuration: _kSheetReverseDuration,
     ),
     builder: (_) => _PhotoPickerSheet(maxSelectable: maxSelectable),
   );
   if (assets == null) return null;
   if (assets.isEmpty) return <Uint8List>[];
-  // Параллельная загрузка байт — порядок сохраняется через Future.wait,
-  // поэтому индексы совпадают с входным `assets`.
-  final results = await Future.wait(assets.map((a) => a.originBytes));
+  // 1) Ждём конца reverse-анимации шита + кадр про запас, чтобы UI-тред
+  //    был свободен. Без этого тяжёлый MethodChannel-трафик из originBytes
+  //    приходится на slide-down кадры и пользователь видит лаги.
+  await Future<void>.delayed(
+    _kSheetReverseDuration + const Duration(milliseconds: 40),
+  );
+  // 2) Читаем байты партиями (по 3), чтобы не насыщать MethodChannel/JNI
+  //    и не блокировать UI-тред десериализацией 15+ JPEG'ов одновременно.
+  //    Порядок результатов сохраняется (по индексу asset'а).
+  const int batchSize = 3;
+  final results = List<Uint8List?>.filled(assets.length, null);
+  for (var i = 0; i < assets.length; i += batchSize) {
+    final end = (i + batchSize < assets.length) ? i + batchSize : assets.length;
+    final batch = <Future<void>>[];
+    for (var j = i; j < end; j++) {
+      final idx = j;
+      batch.add(() async {
+        final bytes = await assets[idx].originBytes;
+        results[idx] = bytes;
+      }());
+    }
+    await Future.wait(batch);
+  }
   return <Uint8List>[
     for (final b in results)
       if (b != null) b,

@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:lottie/lottie.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../api.dart';
@@ -32,6 +31,10 @@ class _SplashScreenState extends State<SplashScreen> {
   // Стадии: 0 — онбординг + вставка ключа, 1 — разрешения.
   int _stage = 0;
   bool _loading = false;
+  // Сообщение об ошибке. Намеренно НЕ показываем ничего для
+  // «формат не похож на токен» / «пустой буфер» — если ключ не вставился,
+  // юзеру и так очевидно по отсутствию перехода на следующий экран.
+  // Показываем только реальные сетевые/auth ошибки (401 от GitHub и т.п.).
   String _error = '';
 
   Future<void> _pasteToken() async {
@@ -44,20 +47,17 @@ class _SplashScreenState extends State<SplashScreen> {
       final data = await Clipboard.getData('text/plain');
       final raw = (data?.text ?? '').trim();
       if (raw.isEmpty) {
-        setState(() {
-          _loading = false;
-          _error = 'Буфер обмена пуст';
-        });
+        // Молча выходим — пустой буфер обмена это не ошибка приложения.
+        setState(() => _loading = false);
         return;
       }
       // быстрая валидация: ghp_, gho_, ghs_, ghu_, ghr_, github_pat_
       final ok =
           RegExp(r'^(ghp|gho|ghs|ghu|ghr)_|^github_pat_').hasMatch(raw);
       if (!ok) {
-        setState(() {
-          _loading = false;
-          _error = 'Это не похоже на токен (ghp_… / github_pat_…)';
-        });
+        // Не похоже на токен — молча игнорируем без надписи под кнопкой.
+        // Пользователь видит, что переход не случился, и сам разберётся.
+        setState(() => _loading = false);
         return;
       }
       final api = GhApi(raw);
@@ -179,53 +179,50 @@ class _FadeRoute<T> extends PageRouteBuilder<T> {
 // Стадия 1. Онбординг (свайп-страницы + sticky-кнопка)
 // =====================================================================
 
-/// Описание одной онбординг-страницы. Иконка может быть либо SVG из
-/// набора Iconify (поле [iconifyName]) — для первой страницы с лого
-/// GitHub, либо анимированный Lottie-стикер (поле [lottieAsset]) —
-/// для страниц с описанием фич. В каждый момент времени НЕНУЛЕВОЕ
-/// должно быть только одно из двух полей.
+/// Описание одной онбординг-страницы. Иконка — всегда Iconify SVG из
+/// набора Solar/MDI (assets/icons/*.svg). Lottie-стикеры удалены —
+/// они давали лаги при свайпе PageView (декод JSON, paint heavy paths)
+/// и визуально были «дёрганые».
 class _OnbPage {
-  final String? iconifyName;
-  final String? lottieAsset;
+  final String iconName;
   final double iconSize;
   final String title;
   final String sub;
   const _OnbPage({
-    this.iconifyName,
-    this.lottieAsset,
+    required this.iconName,
     required this.title,
     required this.sub,
-    this.iconSize = 150,
+    this.iconSize = 130,
   });
 }
 
 const List<_OnbPage> _onbPages = [
   _OnbPage(
-    iconifyName: 'mdi:github',
-    iconSize: 150,
+    iconName: 'mdi:github',
+    iconSize: 138,
     title: 'GitHub Pusher',
     sub: 'Свайпни, чтобы узнать что умеет приложение.',
   ),
   _OnbPage(
-    lottieAsset: 'assets/lottie/cloud.json',
+    iconName: 'solar:cloud-upload-bold',
     title: 'Заливай файлы',
     sub:
         'Прямо с телефона отправляй файлы в любой свой репозиторий — без коммитов вручную.',
   ),
   _OnbPage(
-    lottieAsset: 'assets/lottie/robot.json',
+    iconName: 'solar:rocket-bold',
     title: 'Запускай Actions',
     sub:
         'Следи за статусом сборок и перезапускай их одним тапом прямо из приложения.',
   ),
   _OnbPage(
-    lottieAsset: 'assets/lottie/bag.json',
+    iconName: 'solar:download-square-bold',
     title: 'Скачивай APK',
     sub:
         'Артефакты сборки доступны сразу — устанавливай новый билд без перехода в браузер.',
   ),
   _OnbPage(
-    lottieAsset: 'assets/lottie/lock.json',
+    iconName: 'solar:lock-keyhole-bold',
     title: 'Только на устройстве',
     sub:
         'Токен хранится локально и не отправляется на сторонние серверы. Полный контроль остаётся у вас.',
@@ -249,40 +246,12 @@ class _OnboardingStage extends StatefulWidget {
 class _OnboardingStageState extends State<_OnboardingStage> {
   late final PageController _pc = PageController();
 
-  // Дробная позиция PageView'а 0..count-1. Используется только для
-  // плавных точек-индикаторов (активная вытягивается в полоску
-  // в реальном времени вместе с пальцем).
-  double _page = 0;
-
   // Это ключевое для Telegram-style поведения: settledIndex обновляется
   // ТОЛЬКО в `PageView.onPageChanged`, т.е. ПОСЛЕ того как юзер отпустил
   // палец и PageView докатился до целой страницы. Иконочный
   // AnimatedSwitcher биндится именно на этот индекс, поэтому пока
   // тянешь пальцем — иконка не меняется, только после отпускания.
   int _settledIndex = 0;
-
-  // Кэш предзагруженных LottieComposition'ов. Декодим один раз в
-  // `initState`, дальше Lottie берёт готовый `LottieComposition` без
-  // повторного парсинга JSON.
-  final Map<String, Future<LottieComposition>> _lottieCache = {};
-
-  @override
-  void initState() {
-    super.initState();
-    _pc.addListener(_onScroll);
-    for (final p in _onbPages) {
-      final a = p.lottieAsset;
-      if (a != null) {
-        _lottieCache[a] = AssetLottie(a).load();
-      }
-    }
-  }
-
-  void _onScroll() {
-    final p = _pc.hasClients ? (_pc.page ?? 0).toDouble() : 0.0;
-    if ((p - _page).abs() < 0.001) return;
-    setState(() => _page = p);
-  }
 
   void _onPageChanged(int i) {
     if (i == _settledIndex) return;
@@ -291,7 +260,6 @@ class _OnboardingStageState extends State<_OnboardingStage> {
 
   @override
   void dispose() {
-    _pc.removeListener(_onScroll);
     _pc.dispose();
     super.dispose();
   }
@@ -299,12 +267,19 @@ class _OnboardingStageState extends State<_OnboardingStage> {
   @override
   Widget build(BuildContext context) {
     final pal = context.pal;
+    // Layout:
+    //   • flex 2 сверху, flex 1 снизу — верхний воздух в 2 раза больше
+    //     нижнего, так группа «иконка + текст» оказывается ровно по
+    //     середине экрана (раньше она была заметно выше центра, потому
+    //     что нижний фикс-блок съедал ~155px и спейсеры flex 1/1 делили
+    //     остаток в нижней половине экрана пополам).
+    //   • Нижний блок прижат к bottom (padding 4 снизу), gap'ы между
+    //     кнопкой/линком/подсказкой уменьшены — это «опускает» кнопку
+    //     ниже по экрану, как и просил пользователь.
     return Column(
       children: [
         // ============== ВЕРХНИЙ ВОЗДУХ ==============
-        // Вариант A: иконка+текст единой группой ровно по центру
-        // доступной области (между статус-баром и нижним блоком).
-        const Spacer(),
+        const Spacer(flex: 2),
         // ============== ИКОНОЧНАЯ ЗОНА (фиксирована, НЕ свайпается) ==============
         // Иконка биндится на `_settledIndex`, который обновляется ТОЛЬКО
         // в `PageView.onPageChanged` (т.е. после того как палец отпущен
@@ -328,14 +303,14 @@ class _OnboardingStageState extends State<_OnboardingStage> {
             child: _IconForPage(
               key: ValueKey<int>(_settledIndex),
               page: _onbPages[_settledIndex],
-              lottieCache: _lottieCache,
               textColor: pal.text,
+              accent: AppColors.accent,
             ),
           ),
         ),
-        // Плотный gap между иконкой и заголовком (16px) — иконка
+        // Плотный gap между иконкой и заголовком (20px) — иконка
         // прижата к тексту, единая группа.
-        const SizedBox(height: 16),
+        const SizedBox(height: 20),
         // ============== ТЕКСТ (свайпается вместе с пальцем, edge-to-edge) ==============
         // PageView во всю ширину экрана — без бокового паддинга, чтобы
         // соседние страницы при свайпе уходили за край экрана.
@@ -345,35 +320,40 @@ class _OnboardingStageState extends State<_OnboardingStage> {
           child: PageView.builder(
             controller: _pc,
             itemCount: _onbPages.length,
-            physics: const BouncingScrollPhysics(),
-            // Ключевой момент: onPageChanged срабатывает ТОЛЬКО после
-            // того как PageView докатился до целой страницы (обычно
-            // после отпускания пальца). Именно тут мы переключаем
-            // _settledIndex → иконка плавно меняется.
+            // ClampingScrollPhysics вместо BouncingScrollPhysics — на
+            // онбординге боунс не нужен, и он экономит paint-работу
+            // при overscroll. Главное — не дёргаем setState на каждый
+            // тик скролла (раньше `_pc.addListener` пересобирал ВСЁ
+            // дерево онбординга на каждом фрейме свайпа → лаги).
+            physics: const ClampingScrollPhysics(),
+            // onPageChanged срабатывает ТОЛЬКО после того как PageView
+            // докатился до целой страницы (обычно после отпускания
+            // пальца). Тут мы переключаем _settledIndex → иконка
+            // плавно меняется. Никаких setState на каждый кадр скролла.
             onPageChanged: _onPageChanged,
             itemBuilder: (_, i) {
-              final dist = (i - _page).abs().clamp(0.0, 1.0);
-              final opacity = (1.0 - dist).clamp(0.0, 1.0);
               return RepaintBoundary(
-                child: Opacity(
-                  opacity: opacity,
-                  child: _OnbTextPage(page: _onbPages[i]),
-                ),
+                child: _OnbTextPage(page: _onbPages[i]),
               );
             },
           ),
         ),
-        // Нижний воздух — flex:1, симметрично верхнему Spacer'у.
-        // За счёт двух одинаковых Spacer'ов группа иконка+текст
-        // оказывается ровно по центру свободной области.
-        const Spacer(),
+        // Нижний воздух — в 2 раза меньше верхнего, чтобы группа
+        // «иконка+текст» визуально была ровно по центру экрана.
+        const Spacer(flex: 1),
         // ============== ТОЧКИ + КНОПКА + ХВОСТ ==============
         Padding(
-          padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+          padding: const EdgeInsets.fromLTRB(24, 0, 24, 4),
           child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              _Dots(count: _onbPages.length, position: _page),
-              const SizedBox(height: 18),
+              // Точки-индикаторы. Слушают PageController через
+              // AnimatedBuilder — пересобираются ТОЛЬКО они, а не вся
+              // онбординг-стадия. Раньше `_pc.addListener` дёргал
+              // `setState(() => _page = p)` на всё дерево — это был
+              // основной источник лагов при свайпе.
+              _Dots(controller: _pc, count: _onbPages.length),
+              const SizedBox(height: 22),
               // Кнопка «Вставить ключ» — sticky внизу.
               PressScale(
                 onTap: widget.loading ? null : () => widget.onPaste(),
@@ -425,7 +405,7 @@ class _OnboardingStageState extends State<_OnboardingStage> {
                   ),
                 ),
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: 12),
               // Ссылка «Получить токен на GitHub» под кнопкой.
               PressScale(
                 onTap: () => launchUrl(
@@ -457,20 +437,25 @@ class _OnboardingStageState extends State<_OnboardingStage> {
                   ),
                 ),
               ),
-              const SizedBox(height: 10),
+              // Зона для возможной ошибки (auth/network). Реальный
+              // текст показывается только если `_error` непустой —
+              // для invalid-format / empty-clipboard мы НЕ ставим
+              // ошибку (см. _pasteToken: молча выходим).
               SizedBox(
-                height: 22,
-                child: Text(
-                  widget.error,
-                  style: const TextStyle(
-                    color: AppColors.red,
-                    fontSize: 13,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
+                height: widget.error.isEmpty ? 6 : 22,
+                child: widget.error.isEmpty
+                    ? const SizedBox.shrink()
+                    : Text(
+                        widget.error,
+                        style: const TextStyle(
+                          color: AppColors.red,
+                          fontSize: 13,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
               ),
               Padding(
-                padding: const EdgeInsets.only(bottom: 4),
+                padding: const EdgeInsets.only(top: 2, bottom: 2),
                 child: Text(
                   'Ваш токен хранится только на устройстве',
                   style: TextStyle(color: pal.sub, fontSize: 12),
@@ -484,61 +469,48 @@ class _OnboardingStageState extends State<_OnboardingStage> {
   }
 }
 
-/// Одна иконка для текущей _settledIndex страницы. Рисует либо
-/// Lottie-стикер, либо Iconify SVG. Анимация Lottie всегда активна —
-/// `AnimatedSwitcher` рендерит ровно один экземпляр в каждый момент
-/// времени (кроме короткого crossfade'а), соседние не существуют.
+/// Одна иконка для текущей _settledIndex страницы.
 ///
-/// Обёрнута в `RepaintBoundary` — repaint Lottie не вызывает
-/// перекраску остального дерева (текста, точек).
+/// Раньше тут рисовался Lottie-стикер (cloud/robot/bag/lock.json) —
+/// большой Telegram JSON анимация, тяжёлая на декоде и paint'е.
+/// На свайпе PageView пользователь жаловался на лаги — Lottie
+/// постоянно играл свой 60fps цикл и забирал кучу UI-thread времени.
+///
+/// Теперь — обычный SVG из набора Solar (Iconify). SVG-иконки
+/// прогреты в `svg.cache` на старте (см. precacheAllSvgs), декодятся
+/// один раз и рисуются мгновенно. Никакой анимации внутри иконки —
+/// движение полностью под контролем AnimatedSwitcher между страницами.
 class _IconForPage extends StatelessWidget {
   final _OnbPage page;
-  final Map<String, Future<LottieComposition>> lottieCache;
   final Color textColor;
+  final Color accent;
   const _IconForPage({
     super.key,
     required this.page,
-    required this.lottieCache,
     required this.textColor,
+    required this.accent,
   });
 
   @override
   Widget build(BuildContext context) {
-    final lottieAsset = page.lottieAsset;
     final size = page.iconSize;
-    final Widget icon;
-    if (lottieAsset != null) {
-      icon = FutureBuilder<LottieComposition>(
-        future: lottieCache[lottieAsset],
-        builder: (_, snap) {
-          final comp = snap.data;
-          if (comp == null) {
-            // Декод стартует в `initState` — на практике юзер этого
-            // placeholder'а не видит.
-            return SizedBox(width: size, height: size);
-          }
-          return Lottie(
-            composition: comp,
-            width: size,
-            height: size,
-            fit: BoxFit.contain,
-            animate: true,
-            repeat: true,
-            // 30fps вместо FrameRate.max — для TG-стикеров визуально
-            // неотличимо, но в 2× меньше painting'а.
-            frameRate: FrameRate(30),
-          );
-        },
-      );
-    } else {
-      icon = Iconify(
-        page.iconifyName ?? 'mdi:github',
-        size: size,
-        color: textColor,
-      );
-    }
+    // GitHub-лого (первая страница) рисуем цветом текста (нейтральный),
+    // остальные иконки — акцентным фиолетовым, чтобы они выделялись
+    // и страницы визуально не были «серой стеной».
+    final isLogo = page.iconName == 'mdi:github';
+    final color = isLogo ? textColor : accent;
     return RepaintBoundary(
-      child: SizedBox(width: size, height: size, child: Center(child: icon)),
+      child: SizedBox(
+        width: size,
+        height: size,
+        child: Center(
+          child: Iconify(
+            page.iconName,
+            size: size,
+            color: color,
+          ),
+        ),
+      ),
     );
   }
 }
@@ -563,7 +535,7 @@ class _OnbTextPage extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           // Внутреннего верхнего паддинга нет — gap между иконкой и
-          // заголовком задаётся снаружи (16px) ровно.
+          // заголовком задаётся снаружи (20px) ровно.
           Text(
             page.title,
             textAlign: TextAlign.center,
@@ -593,23 +565,45 @@ class _OnbTextPage extends StatelessWidget {
   }
 }
 
+/// Точки-индикаторы. Слушают `PageController` через `AnimatedBuilder`,
+/// поэтому при свайпе пересобираются ТОЛЬКО они — родительский
+/// `_OnboardingStage` не делает rebuild на каждый кадр скролла.
+///
+/// Раньше было: addListener → setState на всю стадию → ребилд PageView,
+/// Lottie, кнопок и всего дерева 60+ раз в секунду = лаги.
 class _Dots extends StatelessWidget {
+  final PageController controller;
   final int count;
-  /// Дробная позиция страницы (0..count-1). Активная точка плавно
-  /// перетягивается между соседями.
-  final double position;
-  const _Dots({required this.count, required this.position});
+  const _Dots({required this.controller, required this.count});
+
+  double _readPage() {
+    if (!controller.hasClients) return 0.0;
+    final p = controller.page;
+    if (p != null) return p;
+    // initialPage до того как контроллер прикреплён — берём из
+    // ScrollPosition'а виды viewportDimension/pixels (на ранних кадрах
+    // PageController.page может быть null).
+    return controller.initialPage.toDouble();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        for (int i = 0; i < count; i++) ...[
-          if (i > 0) const SizedBox(width: 8),
-          _SingleDot(active: (i - position).abs().clamp(0.0, 1.0)),
-        ],
-      ],
+    return RepaintBoundary(
+      child: AnimatedBuilder(
+        animation: controller,
+        builder: (_, __) {
+          final position = _readPage();
+          return Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              for (int i = 0; i < count; i++) ...[
+                if (i > 0) const SizedBox(width: 8),
+                _SingleDot(active: (i - position).abs().clamp(0.0, 1.0)),
+              ],
+            ],
+          );
+        },
+      ),
     );
   }
 }
@@ -630,9 +624,10 @@ class _SingleDot extends StatelessWidget {
       AppColors.accent,
       t,
     )!;
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 220),
-      curve: Curves.easeOutCubic,
+    // Без AnimatedContainer — само значение `active` уже плавно меняется
+    // каждый кадр (из AnimatedBuilder на ScrollPosition), так что лишняя
+    // implicit-анимация даёт «дребезг» и тратит ресурсы.
+    return Container(
       width: width,
       height: 7,
       decoration: BoxDecoration(
