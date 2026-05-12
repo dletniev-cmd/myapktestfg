@@ -117,34 +117,123 @@ class _SplashScreenState extends State<SplashScreen> {
   @override
   Widget build(BuildContext context) {
     final pal = context.pal;
+    // AnimatedContainer на корне даёт плавный переход цвета фона при
+    // смене темы (300мс). Содержимое (текст/иконки) ловит новый
+    // палитру мгновенно, но в сочетании с анимированным фоном это
+    // выглядит как естественная мягкая смена темы (как в Telegram).
     return Scaffold(
       backgroundColor: pal.bg,
-      body: SafeArea(
+      body: AnimatedContainer(
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOut,
+        color: pal.bg,
+        child: SafeArea(
+          child: Stack(
+            children: [
+              // Основной контент стадии (онбординг / разрешения).
+              Positioned.fill(
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 360),
+                  switchInCurve: Curves.easeOutCubic,
+                  switchOutCurve: Curves.easeInCubic,
+                  transitionBuilder: (child, anim) {
+                    final slide = Tween<Offset>(
+                      begin: const Offset(0.06, 0),
+                      end: Offset.zero,
+                    ).animate(anim);
+                    return FadeTransition(
+                      opacity: anim,
+                      child: SlideTransition(position: slide, child: child),
+                    );
+                  },
+                  child: _stage == 0
+                      ? _OnboardingStage(
+                          key: const ValueKey('onb'),
+                          loading: _loading,
+                          error: _error,
+                          onPaste: _pasteToken,
+                        )
+                      : _PermissionsStage(
+                          key: const ValueKey('perm'),
+                          onStart: _finishToShell,
+                        ),
+                ),
+              ),
+              // Кнопка смены темы — небольшой круглый тогл в правом
+              // верхнем углу, поверх всего. Виден на обеих стадиях.
+              Positioned(
+                top: 8,
+                right: 12,
+                child: _ThemeToggleButton(),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Круглая кнопка смены темы в правом верхнем углу splash.
+///
+/// При тапе вызывает `AppPaletteScope.of(context).toggleTheme()`,
+/// который флипает `AppState.I.isDark` и зовёт `touch()`. После
+/// touch'а корневой `_Root` пересобирает MaterialApp с новой палитрой,
+/// и InheritedWidget доставляет её сюда.
+///
+/// Анимация:
+///   • Иконка sun/moon меняется через `AnimatedSwitcher` с поворотом
+///     на 180° и fade — небольшой «солнечно-лунный» спин.
+///   • Фон/border кнопки анимируется через `AnimatedContainer` (300мс).
+///   • Фон всего splash тоже анимируется через `AnimatedContainer`
+///     в корне `_SplashScreenState.build` — это даёт плавный переход
+///     цвета подложки при смене темы.
+class _ThemeToggleButton extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final pal = context.pal;
+    final isDark = pal.isDark;
+    final iconName = isDark ? 'solar:sun-2-bold' : 'solar:moon-stars-bold';
+    final bg = isDark
+        ? const Color(0xFF1F1F25).withValues(alpha: 0.55)
+        : const Color(0xFFFFFFFF).withValues(alpha: 0.65);
+    final border = pal.sep.withValues(alpha: isDark ? 0.35 : 0.5);
+    final iconColor = isDark
+        ? const Color(0xFFFFC15A)
+        : AppColors.accent;
+    return PressScale(
+      onTap: () => AppPaletteScope.of(context).toggleTheme(),
+      scale: 0.92,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOut,
+        width: 44,
+        height: 44,
+        decoration: BoxDecoration(
+          color: bg,
+          shape: BoxShape.circle,
+          border: Border.all(color: border, width: 1),
+        ),
+        alignment: Alignment.center,
         child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 360),
+          duration: const Duration(milliseconds: 320),
           switchInCurve: Curves.easeOutCubic,
           switchOutCurve: Curves.easeInCubic,
           transitionBuilder: (child, anim) {
-            final slide = Tween<Offset>(
-              begin: const Offset(0.06, 0),
-              end: Offset.zero,
-            ).animate(anim);
+            final rotate = Tween<double>(begin: 0.5, end: 0.0).animate(
+              CurvedAnimation(parent: anim, curve: Curves.easeOutCubic),
+            );
             return FadeTransition(
               opacity: anim,
-              child: SlideTransition(position: slide, child: child),
+              child: RotationTransition(turns: rotate, child: child),
             );
           },
-          child: _stage == 0
-              ? _OnboardingStage(
-                  key: const ValueKey('onb'),
-                  loading: _loading,
-                  error: _error,
-                  onPaste: _pasteToken,
-                )
-              : _PermissionsStage(
-                  key: const ValueKey('perm'),
-                  onStart: _finishToShell,
-                ),
+          child: Iconify(
+            iconName,
+            key: ValueKey<bool>(isDark),
+            size: 22,
+            color: iconColor,
+          ),
         ),
       ),
     );
@@ -183,6 +272,12 @@ class _FadeRoute<T> extends PageRouteBuilder<T> {
 /// набора Solar/MDI (assets/icons/*.svg). Lottie-стикеры удалены —
 /// они давали лаги при свайпе PageView (декод JSON, paint heavy paths)
 /// и визуально были «дёрганые».
+///
+/// `iconSize` — это РАЗМЕР САМОЙ ИКОНКИ внутри фиксированного бокса
+/// `_kIconBoxSize`. Внешний бокс одинаковый для всех страниц, чтобы
+/// при смене страницы текст НЕ прыгал по вертикали (раньше лого
+/// был 138, остальные 130 — при свайпе на стр.2 текст подскакивал на
+/// 8px вверх, когда иконочная зона ужималась под маленькую иконку).
 class _OnbPage {
   final String iconName;
   final double iconSize;
@@ -196,10 +291,15 @@ class _OnbPage {
   });
 }
 
+/// Внешний бокс иконочной зоны. Должен быть >= max(iconSize) всех
+/// страниц, иначе бокс будет схлопываться под текущую иконку и
+/// контент ниже будет прыгать.
+const double _kIconBoxSize = 160;
+
 const List<_OnbPage> _onbPages = [
   _OnbPage(
     iconName: 'mdi:github',
-    iconSize: 138,
+    iconSize: 156, // лого крупнее остальных (фактический размер ~140 из-за внутренних полей SVG)
     title: 'GitHub Pusher',
     sub: 'Свайпни, чтобы узнать что умеет приложение.',
   ),
@@ -285,26 +385,59 @@ class _OnboardingStageState extends State<_OnboardingStage> {
         // в `PageView.onPageChanged` (т.е. после того как палец отпущен
         // и PageView докатился до целой страницы). Пока юзер тянет
         // пальцем — иконка стоит на месте. Когда страница защёлкивается —
-        // AnimatedSwitcher плавно crossfade'ит иконку на новую.
-        RepaintBoundary(
-          child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 280),
-            switchInCurve: Curves.easeOutCubic,
-            switchOutCurve: Curves.easeInCubic,
-            transitionBuilder: (child, anim) {
-              final scale = Tween<double>(begin: 0.88, end: 1.0).animate(
-                CurvedAnimation(parent: anim, curve: Curves.easeOutBack),
-              );
-              return FadeTransition(
-                opacity: anim,
-                child: ScaleTransition(scale: scale, child: child),
-              );
-            },
-            child: _IconForPage(
-              key: ValueKey<int>(_settledIndex),
-              page: _onbPages[_settledIndex],
-              textColor: pal.text,
-              accent: AppColors.accent,
+        // AnimatedSwitcher плавно меняет иконку на новую.
+        //
+        // КРИТИЧНО: внешний SizedBox с фиксированным `_kIconBoxSize` —
+        // защита от «прыжка» текста при свайпе. У иконок разный
+        // визуальный размер (156 у лого, 130 у остальных), и если
+        // не закрепить outer-бокс, AnimatedSwitcher через Stack
+        // ужимался под текущую иконку, а текст ниже подскакивал на
+        // 8-26px. С фикс-боксом outer-размер всегда 160, иконки внутри
+        // центрируются — ничего не прыгает.
+        SizedBox(
+          width: _kIconBoxSize,
+          height: _kIconBoxSize,
+          child: RepaintBoundary(
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 360),
+              switchInCurve: Curves.easeOutCubic,
+              switchOutCurve: Curves.easeInCubic,
+              // Новая анимация смены иконки — мягкий вертикальный
+              // slide (новая иконка прилетает снизу, старая уходит
+              // вверх) + fade. Включается ТОЛЬКО при смене
+              // _settledIndex (т.е. ПОСЛЕ отпускания пальца и
+              // защёлкивания страницы) — поэтому пока юзер тянет, ничего
+              // не моргает. Раньше был scale+easeOutBack, юзер просил
+              // другую — теперь slide-up.
+              transitionBuilder: (child, anim) {
+                final slide = Tween<Offset>(
+                  begin: const Offset(0, 0.18),
+                  end: Offset.zero,
+                ).animate(
+                  CurvedAnimation(parent: anim, curve: Curves.easeOutCubic),
+                );
+                return FadeTransition(
+                  opacity: anim,
+                  child: SlideTransition(position: slide, child: child),
+                );
+              },
+              layoutBuilder: (currentChild, previousChildren) {
+                // Кастомный layout — все children выровнены по центру
+                // фикс-бокса, ничего не растягивает родителя.
+                return Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    ...previousChildren,
+                    if (currentChild != null) currentChild,
+                  ],
+                );
+              },
+              child: _IconForPage(
+                key: ValueKey<int>(_settledIndex),
+                page: _onbPages[_settledIndex],
+                isDark: pal.isDark,
+                textColor: pal.text,
+              ),
             ),
           ),
         ),
@@ -320,12 +453,17 @@ class _OnboardingStageState extends State<_OnboardingStage> {
           child: PageView.builder(
             controller: _pc,
             itemCount: _onbPages.length,
-            // ClampingScrollPhysics вместо BouncingScrollPhysics — на
-            // онбординге боунс не нужен, и он экономит paint-работу
-            // при overscroll. Главное — не дёргаем setState на каждый
-            // тик скролла (раньше `_pc.addListener` пересобирал ВСЁ
-            // дерево онбординга на каждом фрейме свайпа → лаги).
-            physics: const ClampingScrollPhysics(),
+            // PageScrollPhysics — нативная физика для PageView с
+            // правильным snap-поведением. Раньше тут была
+            // ClampingScrollPhysics — она тормозит overscroll, но
+            // также делает свайп «вязким» на границах. PageScroll
+            // даёт плавный snap-feel как в нативных Telegram/Stories.
+            physics: const PageScrollPhysics(parent: BouncingScrollPhysics()),
+            // Прекэшируем соседние страницы — pageView обычно держит
+            // одну страницу и одну соседнюю; явно поднимаем cacheExtent,
+            // чтобы при первом свайпе следующая страница не строилась
+            // в первом кадре скролла (это давало 1-кадровый jank).
+            allowImplicitScrolling: true,
             // onPageChanged срабатывает ТОЛЬКО после того как PageView
             // докатился до целой страницы (обычно после отпускания
             // пальца). Тут мы переключаем _settledIndex → иконка
@@ -482,35 +620,31 @@ class _OnboardingStageState extends State<_OnboardingStage> {
 /// движение полностью под контролем AnimatedSwitcher между страницами.
 class _IconForPage extends StatelessWidget {
   final _OnbPage page;
+  final bool isDark;
   final Color textColor;
-  final Color accent;
   const _IconForPage({
     super.key,
     required this.page,
+    required this.isDark,
     required this.textColor,
-    required this.accent,
   });
 
   @override
   Widget build(BuildContext context) {
     final size = page.iconSize;
-    // GitHub-лого (первая страница) рисуем цветом текста (нейтральный),
-    // остальные иконки — акцентным фиолетовым, чтобы они выделялись
-    // и страницы визуально не были «серой стеной».
     final isLogo = page.iconName == 'mdi:github';
-    final color = isLogo ? textColor : accent;
-    return RepaintBoundary(
-      child: SizedBox(
-        width: size,
-        height: size,
-        child: Center(
-          child: Iconify(
-            page.iconName,
-            size: size,
-            color: color,
-          ),
-        ),
-      ),
+    // GitHub-лого:
+    //   • в светлой теме — акцентный фиолетовый (попросил юзер),
+    //   • в тёмной теме — нейтральный белый (pal.text) как раньше.
+    // Остальные иконки — всегда акцентный фиолетовый, чтобы страницы
+    // визуально не были «серой стеной».
+    final Color color = isLogo
+        ? (isDark ? textColor : AppColors.accent)
+        : AppColors.accent;
+    return Iconify(
+      page.iconName,
+      size: size,
+      color: color,
     );
   }
 }
