@@ -194,45 +194,39 @@ class _ThemeToggleButton extends StatelessWidget {
     final pal = context.pal;
     final isDark = pal.isDark;
     final iconName = isDark ? 'solar:sun-2-bold' : 'solar:moon-stars-bold';
-    final bg = isDark
-        ? const Color(0xFF1F1F25).withValues(alpha: 0.55)
-        : const Color(0xFFFFFFFF).withValues(alpha: 0.65);
-    final border = pal.sep.withValues(alpha: isDark ? 0.35 : 0.5);
+    // Чистая иконка без подложки/обводки — юзер просил «сама по себе».
+    // В тёмной теме солнце тёплого жёлтого оттенка, в светлой — луна
+    // акцентного фиолетового (как и логотип на светлой теме).
     final iconColor = isDark
         ? const Color(0xFFFFC15A)
         : AppColors.accent;
+    // Хит-зона 44×44 для удобного тапа, но визуально — только иконка.
     return PressScale(
       onTap: () => AppPaletteScope.of(context).toggleTheme(),
-      scale: 0.92,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeOut,
+      scale: 0.88,
+      child: SizedBox(
         width: 44,
         height: 44,
-        decoration: BoxDecoration(
-          color: bg,
-          shape: BoxShape.circle,
-          border: Border.all(color: border, width: 1),
-        ),
-        alignment: Alignment.center,
-        child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 320),
-          switchInCurve: Curves.easeOutCubic,
-          switchOutCurve: Curves.easeInCubic,
-          transitionBuilder: (child, anim) {
-            final rotate = Tween<double>(begin: 0.5, end: 0.0).animate(
-              CurvedAnimation(parent: anim, curve: Curves.easeOutCubic),
-            );
-            return FadeTransition(
-              opacity: anim,
-              child: RotationTransition(turns: rotate, child: child),
-            );
-          },
-          child: Iconify(
-            iconName,
-            key: ValueKey<bool>(isDark),
-            size: 22,
-            color: iconColor,
+        child: Center(
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 320),
+            switchInCurve: Curves.easeOutCubic,
+            switchOutCurve: Curves.easeInCubic,
+            transitionBuilder: (child, anim) {
+              final rotate = Tween<double>(begin: 0.5, end: 0.0).animate(
+                CurvedAnimation(parent: anim, curve: Curves.easeOutCubic),
+              );
+              return FadeTransition(
+                opacity: anim,
+                child: RotationTransition(turns: rotate, child: child),
+              );
+            },
+            child: Iconify(
+              iconName,
+              key: ValueKey<bool>(isDark),
+              size: 26,
+              color: iconColor,
+            ),
           ),
         ),
       ),

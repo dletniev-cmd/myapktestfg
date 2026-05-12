@@ -83,29 +83,31 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ),
                   PressScale(
                     onTap: _toggleTheme,
-                    scale: 0.95,
-                    child: Container(
+                    scale: 0.88,
+                    // Чистая иконка sun/moon без подложки и обводки —
+                    // юзер просил «сама по себе». Хит-зона остаётся
+                    // 36×36, чтобы тап был удобный.
+                    child: SizedBox(
                       width: 36,
                       height: 36,
-                      decoration: BoxDecoration(
-                        color: pal.cont2,
-                        borderRadius: BorderRadius.circular(11),
-                      ),
-                      alignment: Alignment.center,
-                      child: AnimatedSwitcher(
-                        duration: const Duration(milliseconds: 220),
-                        transitionBuilder: (child, anim) => RotationTransition(
-                          turns: Tween<double>(begin: 0.25, end: 0.0)
-                              .animate(anim),
-                          child: ScaleTransition(scale: anim, child: child),
-                        ),
-                        child: Iconify(
-                          pal.isDark
-                              ? 'solar:moon-stars-bold'
-                              : 'solar:sun-2-bold',
-                          key: ValueKey(pal.isDark),
-                          size: 19,
-                          color: pal.text,
+                      child: Center(
+                        child: AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 220),
+                          transitionBuilder: (child, anim) => RotationTransition(
+                            turns: Tween<double>(begin: 0.25, end: 0.0)
+                                .animate(anim),
+                            child: ScaleTransition(scale: anim, child: child),
+                          ),
+                          child: Iconify(
+                            pal.isDark
+                                ? 'solar:moon-stars-bold'
+                                : 'solar:sun-2-bold',
+                            key: ValueKey(pal.isDark),
+                            size: 22,
+                            color: pal.isDark
+                                ? const Color(0xFFFFC15A)
+                                : AppColors.accent,
+                          ),
                         ),
                       ),
                     ),
