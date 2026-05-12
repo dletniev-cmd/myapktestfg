@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:lottie/lottie.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../api.dart';
@@ -178,46 +179,53 @@ class _FadeRoute<T> extends PageRouteBuilder<T> {
 // Стадия 1. Онбординг (свайп-страницы + sticky-кнопка)
 // =====================================================================
 
+/// Описание одной онбординг-страницы. Иконка может быть либо SVG из
+/// набора Iconify (поле [iconifyName]) — для первой страницы с лого
+/// GitHub, либо анимированный Lottie-стикер (поле [lottieAsset]) —
+/// для страниц с описанием фич. В каждый момент времени НЕНУЛЕВОЕ
+/// должно быть только одно из двух полей.
 class _OnbPage {
-  final String icon;
+  final String? iconifyName;
+  final String? lottieAsset;
   final double iconSize;
   final String title;
   final String sub;
   const _OnbPage({
-    required this.icon,
+    this.iconifyName,
+    this.lottieAsset,
     required this.title,
     required this.sub,
-    this.iconSize = 130,
+    this.iconSize = 180,
   });
 }
 
 const List<_OnbPage> _onbPages = [
   _OnbPage(
-    icon: 'mdi:github',
-    iconSize: 150,
+    iconifyName: 'mdi:github',
+    iconSize: 170,
     title: 'GitHub Pusher',
     sub: 'Свайпни, чтобы узнать что умеет приложение.',
   ),
   _OnbPage(
-    icon: 'solar:cloud-upload-bold',
+    lottieAsset: 'assets/lottie/cloud.json',
     title: 'Заливай файлы',
     sub:
         'Прямо с телефона отправляй файлы в любой свой репозиторий — без коммитов вручную.',
   ),
   _OnbPage(
-    icon: 'solar:rocket-bold',
+    lottieAsset: 'assets/lottie/robot.json',
     title: 'Запускай Actions',
     sub:
         'Следи за статусом сборок и перезапускай их одним тапом прямо из приложения.',
   ),
   _OnbPage(
-    icon: 'solar:download-bold',
+    lottieAsset: 'assets/lottie/bag.json',
     title: 'Скачивай APK',
     sub:
         'Артефакты сборки доступны сразу — устанавливай новый билд без перехода в браузер.',
   ),
   _OnbPage(
-    icon: 'solar:lock-keyhole-bold',
+    lottieAsset: 'assets/lottie/lock.json',
     title: 'Только на устройстве',
     sub:
         'Токен хранится локально и не отправляется на сторонние серверы. Полный контроль остаётся у вас.',
@@ -241,16 +249,49 @@ class _OnboardingStage extends StatefulWidget {
 class _OnboardingStageState extends State<_OnboardingStage> {
   late final PageController _pc = PageController();
   double _page = 0;
+  // Текущая «целая» страница — на неё ориентируется AnimatedSwitcher
+  // в иконочной зоне. Меняется только при ПОЛНОМ переходе на новую
+  // страницу (когда `_page` пересёк ровно середину).
+  int _settledIndex = 0;
+
+  // Кэш предзагруженных LottieComposition'ов. Декодим один раз при
+  // первом построении экрана, дальше Lottie берёт готовый
+  // `LottieComposition` без повторного парсинга JSON — это убирает
+  // подтормаживания при первом показе анимированного стикера на
+  // соседней странице.
+  final Map<String, Future<LottieComposition>> _lottieCache = {};
 
   @override
   void initState() {
     super.initState();
     _pc.addListener(_onScroll);
+    // Прелоадим все Lottie-композиции, чтобы при первом показе
+    // соседней страницы не было «миг чёрного квадрата» во время
+    // декодинга JSON. Декод идёт в isolate'е через `compute` внутри
+    // `AssetLottie` — UI-тред при этом не блокируется.
+    for (final p in _onbPages) {
+      final a = p.lottieAsset;
+      if (a != null) {
+        _lottieCache[a] = AssetLottie(a).load();
+      }
+    }
   }
 
   void _onScroll() {
     final p = _pc.hasClients ? (_pc.page ?? 0).toDouble() : 0.0;
-    if ((p - _page).abs() > 0.001) setState(() => _page = p);
+    if ((p - _page).abs() < 0.001) return;
+    setState(() {
+      _page = p;
+      // Иконка меняется ровно в момент пересечения середины — это даёт
+      // эффект «icon crossfade» как в Telegram: пока юзер свайпает в
+      // первой половине, иконка остаётся прежней, во второй половине —
+      // мгновенно (но через AnimatedSwitcher плавно) переключается
+      // на следующую.
+      final newSettled = p.round().clamp(0, _onbPages.length - 1);
+      if (newSettled != _settledIndex) {
+        _settledIndex = newSettled;
+      }
+    });
   }
 
   @override
@@ -263,192 +304,289 @@ class _OnboardingStageState extends State<_OnboardingStage> {
   @override
   Widget build(BuildContext context) {
     final pal = context.pal;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 8, 24, 16),
-      child: Column(
-        children: [
-          // Свайпаемые страницы — занимают всё доступное вертикальное
-          // пространство выше кнопки.
-          Expanded(
-            child: PageView.builder(
-              controller: _pc,
-              itemCount: _onbPages.length,
-              physics: const BouncingScrollPhysics(),
-              itemBuilder: (_, i) {
-                // Дистанция от текущей странички до этой [-1..0..1].
-                // Используем для плавного fade + лёгкого scale иконки.
-                final delta = (i - _page).clamp(-1.0, 1.0);
-                final dist = delta.abs();
-                final opacity = (1.0 - dist).clamp(0.0, 1.0);
-                final scale = 1.0 - dist * 0.06;
-                return Opacity(
-                  opacity: opacity,
-                  child: Transform.scale(
-                    scale: scale,
-                    child: _OnbPageView(page: _onbPages[i]),
-                  ),
+    final settled = _onbPages[_settledIndex];
+    return Column(
+      children: [
+        // ============== ЗОНА ИКОНКИ (фиксирована, НЕ свайпается) ==============
+        // Иконка остаётся в одной и той же позиции на всех страницах —
+        // только плавно сменяется через AnimatedSwitcher. Это и есть
+        // «как в Телеграме» — стикер на месте, текст уезжает.
+        Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: SizedBox(
+            height: 200,
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 320),
+              switchInCurve: Curves.easeOutCubic,
+              switchOutCurve: Curves.easeInCubic,
+              transitionBuilder: (child, anim) {
+                final scale = Tween<double>(begin: 0.85, end: 1.0).animate(
+                  CurvedAnimation(parent: anim, curve: Curves.easeOutBack),
+                );
+                return FadeTransition(
+                  opacity: anim,
+                  child: ScaleTransition(scale: scale, child: child),
                 );
               },
-            ),
-          ),
-          // Точки-индикаторы. Активная вытягивается в полоску.
-          _Dots(count: _onbPages.length, position: _page),
-          const SizedBox(height: 18),
-          // Кнопка «Вставить ключ».
-          PressScale(
-            onTap: widget.loading ? null : () => widget.onPaste(),
-            scale: 0.97,
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(vertical: 16),
-              decoration: BoxDecoration(
-                color: AppColors.accent,
-                borderRadius: BorderRadius.circular(18),
-                boxShadow: [
-                  BoxShadow(
-                    color: AppColors.accent.withValues(alpha: 0.20),
-                    blurRadius: 20,
-                    offset: const Offset(0, 8),
-                  ),
-                ],
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (widget.loading)
-                    const SizedBox(
-                      width: 22,
-                      height: 22,
-                      child: CircularProgressIndicator(
-                        color: Colors.white,
-                        strokeWidth: 2.4,
-                        strokeCap: StrokeCap.round,
-                      ),
-                    )
-                  else
-                    const Iconify(
-                      'solar:clipboard-add-bold',
-                      size: 22,
-                      color: Colors.white,
-                    ),
-                  const SizedBox(width: 10),
-                  Text(
-                    widget.loading ? 'Проверяем…' : 'Вставить ключ',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ],
+              child: _IconForPage(
+                key: ValueKey<int>(_settledIndex),
+                page: settled,
+                lottieCache: _lottieCache,
               ),
             ),
           ),
-          const SizedBox(height: 14),
-          // Ссылка «Получить токен на GitHub» под кнопкой.
-          PressScale(
-            onTap: () => launchUrl(
-              Uri.parse(
-                'https://github.com/settings/tokens/new?scopes=repo,delete_repo,workflow&description=GitHub%20Pusher',
-              ),
-              mode: LaunchMode.externalApplication,
-            ),
-            scale: 0.97,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 4),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Iconify(
-                    'solar:link-bold',
-                    size: 16,
+        ),
+        // ============== СВАЙПАЕМЫЕ ТЕКСТЫ (edge-to-edge) ==============
+        // PageView ЗАНИМАЕТ ВСЮ ширину экрана — без бокового паддинга.
+        // Текст внутри сам имеет горизонтальный паддинг 24, но за счёт
+        // того, что сам PageView без обрезающего родителя, при свайпе
+        // соседние страницы выезжают/уезжают с самого края экрана,
+        // а не «обрезаются» по краю отступа.
+        Expanded(
+          child: PageView.builder(
+            controller: _pc,
+            itemCount: _onbPages.length,
+            physics: const BouncingScrollPhysics(),
+            itemBuilder: (_, i) {
+              // Лёгкая параллакс-полупрозрачность только для текста —
+              // соседняя страница «недоезжает» по альфе. Иконка при
+              // этом не моргает (она вне PageView).
+              final dist = (i - _page).abs().clamp(0.0, 1.0);
+              final opacity = (1.0 - dist).clamp(0.0, 1.0);
+              return Opacity(
+                opacity: opacity,
+                child: _OnbTextPage(page: _onbPages[i]),
+              );
+            },
+          ),
+        ),
+        // ============== ТОЧКИ + КНОПКА + ХВОСТ ==============
+        Padding(
+          padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+          child: Column(
+            children: [
+              _Dots(count: _onbPages.length, position: _page),
+              const SizedBox(height: 18),
+              // Кнопка «Вставить ключ» — sticky внизу.
+              PressScale(
+                onTap: widget.loading ? null : () => widget.onPaste(),
+                scale: 0.97,
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  decoration: BoxDecoration(
                     color: AppColors.accent,
+                    borderRadius: BorderRadius.circular(18),
+                    boxShadow: [
+                      BoxShadow(
+                        color: AppColors.accent.withValues(alpha: 0.20),
+                        blurRadius: 20,
+                        offset: const Offset(0, 8),
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 6),
-                  Text(
-                    'Получить токен на GitHub',
-                    style: TextStyle(
-                      color: AppColors.accent,
-                      fontSize: 14,
-                    ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (widget.loading)
+                        const SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(
+                            color: Colors.white,
+                            strokeWidth: 2.4,
+                            strokeCap: StrokeCap.round,
+                          ),
+                        )
+                      else
+                        const Iconify(
+                          'solar:clipboard-add-bold',
+                          size: 22,
+                          color: Colors.white,
+                        ),
+                      const SizedBox(width: 10),
+                      Text(
+                        widget.loading ? 'Проверяем…' : 'Вставить ключ',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
-            ),
-          ),
-          const SizedBox(height: 10),
-          SizedBox(
-            height: 22,
-            child: Text(
-              widget.error,
-              style: const TextStyle(
-                color: AppColors.red,
-                fontSize: 13,
+              const SizedBox(height: 14),
+              // Ссылка «Получить токен на GitHub» под кнопкой.
+              PressScale(
+                onTap: () => launchUrl(
+                  Uri.parse(
+                    'https://github.com/settings/tokens/new?scopes=repo,delete_repo,workflow&description=GitHub%20Pusher',
+                  ),
+                  mode: LaunchMode.externalApplication,
+                ),
+                scale: 0.97,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Iconify(
+                        'solar:link-bold',
+                        size: 16,
+                        color: AppColors.accent,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Получить токен на GitHub',
+                        style: TextStyle(
+                          color: AppColors.accent,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
-              textAlign: TextAlign.center,
-            ),
+              const SizedBox(height: 10),
+              SizedBox(
+                height: 22,
+                child: Text(
+                  widget.error,
+                  style: const TextStyle(
+                    color: AppColors.red,
+                    fontSize: 13,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text(
+                  'Ваш токен хранится только на устройстве',
+                  style: TextStyle(color: pal.sub, fontSize: 12),
+                ),
+              ),
+            ],
           ),
-          Padding(
-            padding: const EdgeInsets.only(bottom: 4),
-            child: Text(
-              'Ваш токен хранится только на устройстве',
-              style: TextStyle(color: pal.sub, fontSize: 12),
-            ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Зона иконки (фиксирована, не свайпается). Меняется через
+/// AnimatedSwitcher: либо SVG-логотип (GitHub) либо Lottie-стикер
+/// (cloud / robot / bag / lock). Lottie берёт уже декодированную
+/// `LottieComposition` из кэша [lottieCache] — повторного парсинга
+/// JSON не происходит.
+class _IconForPage extends StatelessWidget {
+  final _OnbPage page;
+  final Map<String, Future<LottieComposition>> lottieCache;
+  const _IconForPage({
+    super.key,
+    required this.page,
+    required this.lottieCache,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = context.pal;
+    final lottieAsset = page.lottieAsset;
+    if (lottieAsset != null) {
+      // Lottie рендерится через flutter painting API без MethodChannel,
+      // поэтому даже при свайпе PageView фреймрейт стикера остаётся
+      // независимым от UI-нагрузки. `repeat: true` зацикливает.
+      return Center(
+        child: SizedBox(
+          width: page.iconSize,
+          height: page.iconSize,
+          child: FutureBuilder<LottieComposition>(
+            future: lottieCache[lottieAsset],
+            builder: (_, snap) {
+              final comp = snap.data;
+              if (comp == null) {
+                // До прогрева кэша — пустой placeholder. На практике
+                // декод занимает 30-80мс, и юзер этого не увидит,
+                // потому что мы стартуем декод в initState.
+                return const SizedBox.shrink();
+              }
+              return Lottie(
+                composition: comp,
+                width: page.iconSize,
+                height: page.iconSize,
+                fit: BoxFit.contain,
+                repeat: true,
+                frameRate: FrameRate.max,
+              );
+            },
           ),
-        ],
+        ),
+      );
+    }
+    return Center(
+      child: SizedBox(
+        width: page.iconSize,
+        height: page.iconSize,
+        child: Center(
+          child: Iconify(
+            page.iconifyName ?? 'mdi:github',
+            size: page.iconSize,
+            color: pal.text,
+          ),
+        ),
       ),
     );
   }
 }
 
-class _OnbPageView extends StatelessWidget {
+/// Текстовая половина одной онбординг-страницы (заголовок + подпись).
+/// Без иконки — иконка вынесена в отдельную зону над PageView'ом, чтобы
+/// при свайпе оставаться на месте (как стикер в Telegram). Свой
+/// внутренний горизонтальный паддинг 24px — потому что снаружи у
+/// PageView'а паддинга НЕТ (иначе соседние страницы при свайпе
+/// «обрезаются» по краю отступа, а юзер хочет чтобы они уходили за
+/// край экрана).
+class _OnbTextPage extends StatelessWidget {
   final _OnbPage page;
-  const _OnbPageView({required this.page});
+  const _OnbTextPage({required this.page});
   @override
   Widget build(BuildContext context) {
     final pal = context.pal;
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        // Иконка без подложки — берёт цвет text (на тёмной теме — белый).
-        SizedBox(
-          width: page.iconSize + 30,
-          height: page.iconSize + 30,
-          child: Center(
-            child: Iconify(
-              page.icon,
-              size: page.iconSize,
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          const SizedBox(height: 12),
+          Text(
+            page.title,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 26,
+              fontWeight: FontWeight.w700,
+              letterSpacing: -.5,
               color: pal.text,
             ),
           ),
-        ),
-        const SizedBox(height: 28),
-        Text(
-          page.title,
-          textAlign: TextAlign.center,
-          style: TextStyle(
-            fontSize: 26,
-            fontWeight: FontWeight.w700,
-            letterSpacing: -.5,
-            color: pal.text,
-          ),
-        ),
-        const SizedBox(height: 12),
-        ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 320),
-          child: Text(
-            page.sub,
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 15,
-              color: pal.sub,
-              height: 1.5,
+          const SizedBox(height: 12),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 320),
+            child: Text(
+              page.sub,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 15,
+                color: pal.sub,
+                height: 1.5,
+              ),
             ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }

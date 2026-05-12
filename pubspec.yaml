@@ -1,7 +1,7 @@
 name: github_pusher
 description: "GitHub Pusher — заливай файлы, отслеживай Actions и скачивай APK прямо с телефона."
 publish_to: 'none'
-version: 1.9.0+63
+version: 1.9.1+64
 
 environment:
   sdk: ^3.5.4
@@ -21,6 +21,12 @@ dependencies:
   share_plus: ^10.0.2
   photo_manager: ^3.5.2
   flutter_local_notifications: ^17.2.1+2
+  # Lottie — для анимированных стикеров на экране онбординга
+  # (cloud / robot / bag / lock). .tgs Telegram-стикеры предварительно
+  # распакованы в обычный Lottie JSON и лежат в assets/lottie/.
+  # Lottie рендерится на GPU через `flutter`, без MethodChannel — то
+  # есть не блокирует UI-тред и не лагает на свайпе PageView.
+  lottie: ^3.1.2
   # crypto уже подтягивается транзитивно (http→...→crypto), фиксируем
   # как явную зависимость, потому что используем `sha1.convert(...)`
   # напрямую в api.pushFiles для расчёта git blob SHA локально и
@@ -37,3 +43,4 @@ flutter:
   uses-material-design: true
   assets:
     - assets/icons/
+    - assets/lottie/
