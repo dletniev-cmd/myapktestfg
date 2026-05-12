@@ -248,27 +248,26 @@ class _OnboardingStage extends StatefulWidget {
 
 class _OnboardingStageState extends State<_OnboardingStage> {
   late final PageController _pc = PageController();
+
+  // Дробная позиция страницы 0..count-1. Используется и для опасити
+  // иконок в Stack-е, и для точек-индикаторов. Обновляется через
+  // обычный setState — это окей, потому что иконки и точки уже
+  // обёрнуты в RepaintBoundary, так что пересчёт layout у них
+  // дешёвый.
   double _page = 0;
-  // Текущая «целая» страница — на неё ориентируется AnimatedSwitcher
-  // в иконочной зоне. Меняется только при ПОЛНОМ переходе на новую
-  // страницу (когда `_page` пересёк ровно середину).
-  int _settledIndex = 0;
 
   // Кэш предзагруженных LottieComposition'ов. Декодим один раз при
-  // первом построении экрана, дальше Lottie берёт готовый
-  // `LottieComposition` без повторного парсинга JSON — это убирает
-  // подтормаживания при первом показе анимированного стикера на
-  // соседней странице.
+  // первом построении экрана (в `initState`), дальше Lottie берёт
+  // готовый `LottieComposition` без повторного парсинга JSON — это
+  // убирает «миг чёрного квадрата» при первом показе соседней страницы.
   final Map<String, Future<LottieComposition>> _lottieCache = {};
 
   @override
   void initState() {
     super.initState();
     _pc.addListener(_onScroll);
-    // Прелоадим все Lottie-композиции, чтобы при первом показе
-    // соседней страницы не было «миг чёрного квадрата» во время
-    // декодинга JSON. Декод идёт в isolate'е через `compute` внутри
-    // `AssetLottie` — UI-тред при этом не блокируется.
+    // Прелоадим все Lottie-композиции. Декод идёт в isolate'е через
+    // `compute` внутри `AssetLottie.load()` — UI-тред не блокируется.
     for (final p in _onbPages) {
       final a = p.lottieAsset;
       if (a != null) {
@@ -280,18 +279,7 @@ class _OnboardingStageState extends State<_OnboardingStage> {
   void _onScroll() {
     final p = _pc.hasClients ? (_pc.page ?? 0).toDouble() : 0.0;
     if ((p - _page).abs() < 0.001) return;
-    setState(() {
-      _page = p;
-      // Иконка меняется ровно в момент пересечения середины — это даёт
-      // эффект «icon crossfade» как в Telegram: пока юзер свайпает в
-      // первой половине, иконка остаётся прежней, во второй половине —
-      // мгновенно (но через AnimatedSwitcher плавно) переключается
-      // на следующую.
-      final newSettled = p.round().clamp(0, _onbPages.length - 1);
-      if (newSettled != _settledIndex) {
-        _settledIndex = newSettled;
-      }
-    });
+    setState(() => _page = p);
   }
 
   @override
@@ -304,58 +292,45 @@ class _OnboardingStageState extends State<_OnboardingStage> {
   @override
   Widget build(BuildContext context) {
     final pal = context.pal;
-    final settled = _onbPages[_settledIndex];
     return Column(
       children: [
-        // ============== ЗОНА ИКОНКИ (фиксирована, НЕ свайпается) ==============
-        // Иконка остаётся в одной и той же позиции на всех страницах —
-        // только плавно сменяется через AnimatedSwitcher. Это и есть
-        // «как в Телеграме» — стикер на месте, текст уезжает.
-        Padding(
-          padding: const EdgeInsets.only(top: 8),
-          child: SizedBox(
-            height: 200,
-            child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 320),
-              switchInCurve: Curves.easeOutCubic,
-              switchOutCurve: Curves.easeInCubic,
-              transitionBuilder: (child, anim) {
-                final scale = Tween<double>(begin: 0.85, end: 1.0).animate(
-                  CurvedAnimation(parent: anim, curve: Curves.easeOutBack),
-                );
-                return FadeTransition(
-                  opacity: anim,
-                  child: ScaleTransition(scale: scale, child: child),
-                );
-              },
-              child: _IconForPage(
-                key: ValueKey<int>(_settledIndex),
-                page: settled,
-                lottieCache: _lottieCache,
-              ),
-            ),
+        // ============== ВЕРХНЯЯ ПОЛОВИНА — ИКОНКА (центр) ==============
+        // Stack всех иконок по центру верхней половины экрана. Каждая
+        // иконка имеет свою opacity по формуле `1 - |i - _page|`, и
+        // АНИМИРУЕТСЯ ТОЛЬКО АКТИВНАЯ (та, что ближе к целому индексу).
+        // Соседние стоят на паузе — Lottie не тикает, GPU/CPU не
+        // тратит на них ресурсы. Это и убирает лаг при свайпе.
+        Expanded(
+          flex: 5,
+          child: _IconStack(
+            pages: _onbPages,
+            page: _page,
+            lottieCache: _lottieCache,
+            textColor: pal.text,
           ),
         ),
-        // ============== СВАЙПАЕМЫЕ ТЕКСТЫ (edge-to-edge) ==============
+        // ============== НИЖНЯЯ ПОЛОВИНА — ТЕКСТ (свайпается) ==============
         // PageView ЗАНИМАЕТ ВСЮ ширину экрана — без бокового паддинга.
-        // Текст внутри сам имеет горизонтальный паддинг 24, но за счёт
-        // того, что сам PageView без обрезающего родителя, при свайпе
-        // соседние страницы выезжают/уезжают с самого края экрана,
-        // а не «обрезаются» по краю отступа.
+        // Каждая страница внутри сама имеет горизонтальный паддинг 24,
+        // но за счёт того, что сам PageView без обрезающего родителя,
+        // при свайпе соседние страницы выезжают/уезжают с самого края.
         Expanded(
+          flex: 3,
           child: PageView.builder(
             controller: _pc,
             itemCount: _onbPages.length,
             physics: const BouncingScrollPhysics(),
             itemBuilder: (_, i) {
-              // Лёгкая параллакс-полупрозрачность только для текста —
-              // соседняя страница «недоезжает» по альфе. Иконка при
-              // этом не моргает (она вне PageView).
+              // Текст соседней страницы недоезжает по альфе — это
+              // лёгкий visual hint, что свайп в процессе. RepaintBoundary
+              // изолирует перекраску текста от иконочного Stack'а.
               final dist = (i - _page).abs().clamp(0.0, 1.0);
               final opacity = (1.0 - dist).clamp(0.0, 1.0);
-              return Opacity(
-                opacity: opacity,
-                child: _OnbTextPage(page: _onbPages[i]),
+              return RepaintBoundary(
+                child: Opacity(
+                  opacity: opacity,
+                  child: _OnbTextPage(page: _onbPages[i]),
+                ),
               );
             },
           ),
@@ -477,66 +452,109 @@ class _OnboardingStageState extends State<_OnboardingStage> {
   }
 }
 
-/// Зона иконки (фиксирована, не свайпается). Меняется через
-/// AnimatedSwitcher: либо SVG-логотип (GitHub) либо Lottie-стикер
-/// (cloud / robot / bag / lock). Lottie берёт уже декодированную
-/// `LottieComposition` из кэша [lottieCache] — повторного парсинга
-/// JSON не происходит.
-class _IconForPage extends StatelessWidget {
-  final _OnbPage page;
+/// Зона иконки. Все 5 иконок отрендерены в Stack'е и стоят по центру
+/// верхней половины экрана. Активной (та, чей индекс ближе всего к
+/// текущей странице) выставлен `animate: true` — она единственная
+/// тикает. Соседние стоят на паузе и не нагружают CPU/GPU, поэтому
+/// свайп остаётся плавным.
+///
+/// Иконки внутри обёрнуты в `RepaintBoundary` — это значит, что
+/// Lottie'шный repaint происходит на отдельном слое и не приводит к
+/// перекраске всего поддерева (в том числе текста и точек-индикаторов).
+class _IconStack extends StatelessWidget {
+  final List<_OnbPage> pages;
+  final double page;
   final Map<String, Future<LottieComposition>> lottieCache;
-  const _IconForPage({
-    super.key,
+  final Color textColor;
+  const _IconStack({
+    required this.pages,
     required this.page,
     required this.lottieCache,
+    required this.textColor,
   });
 
   @override
   Widget build(BuildContext context) {
-    final pal = context.pal;
-    final lottieAsset = page.lottieAsset;
-    if (lottieAsset != null) {
-      // Lottie рендерится через flutter painting API без MethodChannel,
-      // поэтому даже при свайпе PageView фреймрейт стикера остаётся
-      // независимым от UI-нагрузки. `repeat: true` зацикливает.
-      return Center(
-        child: SizedBox(
-          width: page.iconSize,
-          height: page.iconSize,
-          child: FutureBuilder<LottieComposition>(
-            future: lottieCache[lottieAsset],
-            builder: (_, snap) {
-              final comp = snap.data;
-              if (comp == null) {
-                // До прогрева кэша — пустой placeholder. На практике
-                // декод занимает 30-80мс, и юзер этого не увидит,
-                // потому что мы стартуем декод в initState.
-                return const SizedBox.shrink();
-              }
-              return Lottie(
-                composition: comp,
-                width: page.iconSize,
-                height: page.iconSize,
-                fit: BoxFit.contain,
-                repeat: true,
-                frameRate: FrameRate.max,
-              );
-            },
+    // Активная страница = та, чей индекс ближе всего к дробной позиции.
+    final activeIndex = page.round().clamp(0, pages.length - 1);
+    return Stack(
+      alignment: Alignment.center,
+      children: [
+        for (int i = 0; i < pages.length; i++)
+          _IconLayer(
+            page: pages[i],
+            // Opacity: 1.0 в центре, плавно затухает к 0 на расстоянии 1.
+            opacity: (1.0 - (i - page).abs()).clamp(0.0, 1.0),
+            animate: i == activeIndex,
+            lottieCache: lottieCache,
+            textColor: textColor,
           ),
-        ),
+      ],
+    );
+  }
+}
+
+/// Одна иконка в Stack-е. Получает свою opacity и флаг `animate`.
+/// Когда `animate=false`, Lottie на паузе (тикер не работает, repaint
+/// не происходит) — это и есть фикс лага при свайпе.
+class _IconLayer extends StatelessWidget {
+  final _OnbPage page;
+  final double opacity;
+  final bool animate;
+  final Map<String, Future<LottieComposition>> lottieCache;
+  final Color textColor;
+  const _IconLayer({
+    required this.page,
+    required this.opacity,
+    required this.animate,
+    required this.lottieCache,
+    required this.textColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // Невидимые слои не рендерим вообще — экономит drawing cost при
+    // свайпе через несколько страниц.
+    if (opacity <= 0.001) return const SizedBox.shrink();
+    final lottieAsset = page.lottieAsset;
+    final size = page.iconSize;
+    final Widget icon;
+    if (lottieAsset != null) {
+      icon = FutureBuilder<LottieComposition>(
+        future: lottieCache[lottieAsset],
+        builder: (_, snap) {
+          final comp = snap.data;
+          if (comp == null) {
+            // До прогрева кэша — пустой placeholder. На практике
+            // декод занимает 30-80мс, и юзер этого не видит, потому
+            // что мы стартуем декод в `initState`.
+            return SizedBox(width: size, height: size);
+          }
+          return Lottie(
+            composition: comp,
+            width: size,
+            height: size,
+            fit: BoxFit.contain,
+            animate: animate,
+            repeat: true,
+            // 30fps вместо `FrameRate.max` — для Telegram-стикеров
+            // визуально неотличимо, но 2× меньше painting'а. Это
+            // главный пункт фикса лага.
+            frameRate: FrameRate(30),
+          );
+        },
+      );
+    } else {
+      icon = Iconify(
+        page.iconifyName ?? 'mdi:github',
+        size: size,
+        color: textColor,
       );
     }
-    return Center(
-      child: SizedBox(
-        width: page.iconSize,
-        height: page.iconSize,
-        child: Center(
-          child: Iconify(
-            page.iconifyName ?? 'mdi:github',
-            size: page.iconSize,
-            color: pal.text,
-          ),
-        ),
+    return Opacity(
+      opacity: opacity,
+      child: RepaintBoundary(
+        child: SizedBox(width: size, height: size, child: Center(child: icon)),
       ),
     );
   }
