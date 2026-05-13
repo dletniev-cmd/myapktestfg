@@ -1,11 +1,11 @@
 // This is a generated file; do not edit or check into version control.
-FLUTTER_ROOT=/tmp/flutter
-FLUTTER_APPLICATION_PATH=/home/ubuntu/github_pusher/github_pusher_v93_layout_A
+FLUTTER_ROOT=/home/ubuntu/flutter-sdk
+FLUTTER_APPLICATION_PATH=/home/ubuntu/workspace/github_pusher/github_pusher_v99_layout_A
 COCOAPODS_PARALLEL_CODE_SIGN=true
 FLUTTER_TARGET=lib/main.dart
 FLUTTER_BUILD_DIR=build
-FLUTTER_BUILD_NAME=1.9.5
-FLUTTER_BUILD_NUMBER=68
+FLUTTER_BUILD_NAME=1.9.9
+FLUTTER_BUILD_NUMBER=72
 EXCLUDED_ARCHS[sdk=iphonesimulator*]=i386
 EXCLUDED_ARCHS[sdk=iphoneos*]=armv7
 DART_OBFUSCATION=false
