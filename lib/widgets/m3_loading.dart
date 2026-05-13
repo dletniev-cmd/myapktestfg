@@ -126,6 +126,13 @@ class _M3LinearProgressState extends State<M3LinearProgress>
 
   @override
   Widget build(BuildContext context) {
+    // Прогресс приходит с пуллинга API раз в несколько секунд.
+    // Если рисовать его «как есть», полоса стоит — потом скачком
+    // прыгает на новое значение. Чтобы движение было плавным,
+    // оборачиваем значение в TweenAnimationBuilder: при каждом
+    // апдейте полоса плавно «доезжает» до нового процента за 800мс.
+    final actual = widget.progress?.clamp(0.0, 1.0);
+
     // RepaintBoundary: важная штука для списков (Actions). Без
     // неё каждый кадр wave-анимации инвалидирует layer всего
     // ListView, и при скролле каждый кадр перерисовывал бы ВСЕ
@@ -134,18 +141,30 @@ class _M3LinearProgressState extends State<M3LinearProgress>
       child: SizedBox(
         height: widget.thickness + 2,
         width: double.infinity,
-        child: AnimatedBuilder(
-          animation: _wave,
-          builder: (_, __) {
-            return CustomPaint(
-              painter: _M3LinearPainter(
-                progress: widget.progress?.clamp(0.0, 1.0),
-                activeColor: widget.activeColor,
-                trackColor: widget.trackColor,
-                thickness: widget.thickness,
-                wavePhase: _wave.value,
-                wavy: widget.wavy,
-              ),
+        child: TweenAnimationBuilder<double>(
+          // begin=0 используется ТОЛЬКО для самого первого рендера.
+          // TweenAnimationBuilder при последующих обновлениях
+          // tween.end автоматически берёт текущее отображаемое
+          // значение как новое begin — плавный плыв от старого
+          // к новому, без скачков.
+          tween: Tween<double>(begin: 0.0, end: actual ?? 0.0),
+          duration: const Duration(milliseconds: 800),
+          curve: Curves.easeOutCubic,
+          builder: (_, animatedProgress, __) {
+            return AnimatedBuilder(
+              animation: _wave,
+              builder: (_, __) {
+                return CustomPaint(
+                  painter: _M3LinearPainter(
+                    progress: actual == null ? null : animatedProgress,
+                    activeColor: widget.activeColor,
+                    trackColor: widget.trackColor,
+                    thickness: widget.thickness,
+                    wavePhase: _wave.value,
+                    wavy: widget.wavy,
+                  ),
+                );
+              },
             );
           },
         ),
