@@ -1152,105 +1152,25 @@ double computeRunProgress(GhRun run,
   }
 }
 
-/// Градиентная полоса прогресса для активных ранов. Общий вид из
-/// HTML: высота 6px, розово-фиолетовый градиент, лёгкий shimmer поверх.
-/// Прогресс обязательно в диапазоне [0, 1] — передаётся явно, чтобы
-/// вызывающий код в разных экранах брал его из одного источника.
-class RunProgressBar extends StatefulWidget {
+/// Полоса прогресса активных ранов. Новый M3 expressive вид
+/// (https://m3.material.io/components/progress-indicators/overview):
+/// активный сегмент wavy-волной, трек прямой, между ними gap,
+/// в конце трека — stop-точка. Drop-in замена старой градиентной
+/// полосы с shimmer'ом — выглядит современно и тратит меньше
+/// ресурсов (нет saveLayer от градиента + shimmer'а).
+class RunProgressBar extends StatelessWidget {
   final double progress;
   const RunProgressBar({super.key, required this.progress});
-  @override
-  State<RunProgressBar> createState() => _RunProgressBarState();
-}
-
-class _RunProgressBarState extends State<RunProgressBar>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _shimmer = AnimationController(
-      vsync: this, duration: const Duration(seconds: 2))
-    ..repeat();
-
-  @override
-  void dispose() {
-    _shimmer.dispose();
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {
     final pal = context.pal;
-    final p = widget.progress.clamp(0.0, 1.0);
-    // RepaintBoundary вокруг всего бара — это критично, когда в
-    // списке actions одновременно живёт несколько активных ранов с
-    // прогресс-барами. Без RepaintBoundary shimmer на каждом баре
-    // инвалидирует layer общий с ListView, и при скролле каждый
-    // кадр перерисовывал ВСЕ карточки. С границей repaint shimmer'а
-    // изолирован в свой layer и не лезет за пределы 6px высоты.
-    return RepaintBoundary(
-      child: Container(
-        height: 6,
-        decoration: BoxDecoration(
-          color: pal.cont2,
-          borderRadius: BorderRadius.circular(6),
-        ),
-        clipBehavior: Clip.antiAlias,
-        child: LayoutBuilder(builder: (_, c) {
-          return Stack(
-            children: [
-              AnimatedContainer(
-                duration: const Duration(milliseconds: 1000),
-                curve: const Cubic(.25, .46, .45, .94),
-                width: c.maxWidth * p,
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [AppColors.accent, AppColors.pink],
-                  ),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-              ),
-              Positioned.fill(
-                child: RepaintBoundary(
-                  child: AnimatedBuilder(
-                    animation: _shimmer,
-                    builder: (_, __) => CustomPaint(
-                      painter: _ShimmerPainter(_shimmer.value),
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          );
-        }),
-      ),
+    return M3LinearProgress(
+      progress: progress,
+      activeColor: AppColors.accent,
+      trackColor: pal.cont2,
     );
   }
-}
-
-class _ShimmerPainter extends CustomPainter {
-  final double t;
-  _ShimmerPainter(this.t);
-
-  // Префаб Paint и список цветов градиента вынесены за пределы paint()
-  // — раньше на каждый кадр выделялся новый Paint+List, что добавляло
-  // GC-давление при ~60 fps на каждый видимый прогресс-бар. Теперь —
-  // одно выделение на жизнь painter'а.
-  static final Paint _paint = Paint();
-  static const List<Color> _shimmerColors = [
-    Color(0x00FFFFFF),
-    Color(0x4DFFFFFF), // 30% white
-    Color(0x00FFFFFF),
-  ];
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final left = -size.width + (size.width * 2) * t;
-    final rect = Rect.fromLTWH(0, 0, size.width, size.height);
-    _paint.shader = const LinearGradient(colors: _shimmerColors)
-        .createShader(Rect.fromLTWH(left, 0, size.width, size.height));
-    canvas.drawRect(rect, _paint);
-  }
-
-  @override
-  bool shouldRepaint(covariant _ShimmerPainter old) => old.t != t;
 }
 
 class _MiniBtn extends StatelessWidget {

@@ -5,6 +5,7 @@ import '../navigation.dart';
 import '../state.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import '../widgets/m3_loading.dart';
 import 'new_repo.dart';
 import 'other.dart';
 import 'repos.dart';
@@ -505,13 +506,12 @@ class _UploadCardState extends State<_UploadCard> {
                 ),
               ],
             ),
-            // Прогресс-бар внизу карточки. AnimatedOpacity плавно
-            // появляется/исчезает по статусу задачи. Заполненная часть
-            // нарисована вручную (FractionallySizedBox + Container),
-            // чтобы у движущегося акцентного «штриха» были скруглены ОБА
-            // края, а не только внешний прямоугольник контейнера, как у
-            // дефолтного LinearProgressIndicator (юзер просил
-            // скруглённые края у самой движущейся полосы).
+            // Прогресс-бар внизу карточки. Новый M3 expressive
+            // вид — wavy активный сегмент, прямой трек, stop-точка
+            // в конце. Цвет активной части — accent (или red при
+            // ошибке). AnimatedOpacity скрывает виджет, когда
+            // задача не активна. TweenAnimationBuilder сглаживает
+            // прыжки прогресса (40% → 45% за 240мс).
             Positioned(
               left: 0,
               right: 0,
@@ -519,43 +519,21 @@ class _UploadCardState extends State<_UploadCard> {
               child: AnimatedOpacity(
                 duration: const Duration(milliseconds: 280),
                 opacity: showProgress ? 1.0 : 0.0,
-                child: SizedBox(
-                  height: 6,
-                  child: TweenAnimationBuilder<double>(
-                    duration: const Duration(milliseconds: 240),
-                    curve: Curves.easeOut,
-                    tween: Tween<double>(
-                      begin: 0,
-                      end: task.progress.clamp(0.0, 1.0),
-                    ),
-                    builder: (_, value, __) {
-                      return Stack(
-                        children: [
-                          // Фон (трек)
-                          Container(
-                            decoration: BoxDecoration(
-                              color: pal.cont2,
-                              borderRadius: BorderRadius.circular(3),
-                            ),
-                          ),
-                          // Заполненная акцентная часть — со скруглёнными
-                          // краями с обеих сторон.
-                          FractionallySizedBox(
-                            widthFactor: value.clamp(0.0, 1.0),
-                            heightFactor: 1,
-                            child: Container(
-                              decoration: BoxDecoration(
-                                color: err
-                                    ? AppColors.red
-                                    : AppColors.accent,
-                                borderRadius: BorderRadius.circular(3),
-                              ),
-                            ),
-                          ),
-                        ],
-                      );
-                    },
+                child: TweenAnimationBuilder<double>(
+                  duration: const Duration(milliseconds: 240),
+                  curve: Curves.easeOut,
+                  tween: Tween<double>(
+                    begin: 0,
+                    end: task.progress.clamp(0.0, 1.0),
                   ),
+                  builder: (_, value, __) {
+                    return M3LinearProgress(
+                      progress: value,
+                      activeColor: err ? AppColors.red : AppColors.accent,
+                      trackColor: pal.cont2,
+                      thickness: 6,
+                    );
+                  },
                 ),
               ),
             ),
