@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import '../widgets/m3_loading.dart';
 
 import '../iconify.dart';
 import '../navigation.dart';
@@ -603,7 +602,7 @@ class _BdShotsGridState extends State<_BdShotsGrid> {
                 height: 38,
                 // Акцентный цвет (как везде в приложении), потолще,
                 // скруглённые концы — чтоб смотрелось аккуратнее.
-                child: M3LoadingIndicator(
+                child: CircularProgressIndicator(
                   strokeWidth: 3.2,
                   strokeCap: StrokeCap.round,
                   valueColor: AlwaysStoppedAnimation<Color>(

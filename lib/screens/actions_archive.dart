@@ -2,7 +2,6 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
-import '../widgets/m3_loading.dart';
 
 import '../api.dart';
 import '../iconify.dart';
@@ -78,7 +77,7 @@ class _ActionsArchiveScreenState extends State<ActionsArchiveScreen> {
               Expanded(
                 child: _loading
                     ? Center(
-                        child: M3LoadingIndicator(
+                        child: CircularProgressIndicator(
                             color: AppColors.accent,
                             strokeCap: StrokeCap.round))
                     : _items.isEmpty

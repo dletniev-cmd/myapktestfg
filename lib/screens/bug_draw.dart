@@ -3,7 +3,6 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
-import '../widgets/m3_loading.dart';
 
 import '../iconify.dart';
 import '../state.dart';
@@ -176,7 +175,7 @@ class _BugDrawScreenState extends State<BugDrawScreen> {
                   padding: const EdgeInsets.symmetric(vertical: 14),
                   child: Center(
                     child: _img == null
-                        ? M3LoadingIndicator(
+                        ? CircularProgressIndicator(
                             color: AppColors.accent,
                             strokeCap: StrokeCap.round)
                         : LayoutBuilder(builder: (_, c) {

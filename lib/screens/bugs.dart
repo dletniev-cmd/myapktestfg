@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import '../widgets/m3_loading.dart';
 
 import '../iconify.dart';
 import '../navigation.dart';
@@ -514,7 +513,7 @@ class _RingArchiveBtn extends StatelessWidget {
               child: SizedBox(
                 width: 32,
                 height: 32,
-                child: M3LoadingIndicator(
+                child: CircularProgressIndicator(
                   strokeWidth: 2.5,
                   strokeCap: StrokeCap.round,
                   color: AppColors.accent,
