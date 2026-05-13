@@ -2,6 +2,7 @@ import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import '../widgets/m3_loading.dart';
 
 import '../iconify.dart';
 import '../navigation.dart';
@@ -27,6 +28,18 @@ class _UploadScreenState extends State<UploadScreen> {
   // пользователь не понимал, почему «ничего не происходит».
   String? _pickError;
 
+  // Анимация secondaryRoute: когда поверх UploadScreen пушится
+  // CommitScreen, эта анимация играется forward (0→1). Пока она
+  // активна, любой `setState()` от AppState.touch() (например,
+  // прогресс активной заливки в фоне) триггерит ребилд UploadScreen
+  // ПОД пушащимся экраном — и slide-in коммит-экрана получает jank.
+  // Этот lag юзер прямо и описывает: «лагает анимация при открытии
+  // экрана коммит». Замеряя secondaryAnimation, мы откладываем
+  // setState'ы до конца перехода и больше не дёргаем рендер.
+  Animation<double>? _secAnim;
+  bool _pushingChild = false;
+  bool _pendingSetState = false;
+
   @override
   void initState() {
     super.initState();
@@ -35,12 +48,50 @@ class _UploadScreenState extends State<UploadScreen> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final anim = ModalRoute.of(context)?.secondaryAnimation;
+    if (!identical(anim, _secAnim)) {
+      _secAnim?.removeStatusListener(_onSecAnimStatus);
+      _secAnim = anim;
+      _secAnim?.addStatusListener(_onSecAnimStatus);
+    }
+  }
+
+  void _onSecAnimStatus(AnimationStatus status) {
+    if (status == AnimationStatus.forward) {
+      // Поверх нас пушится новый экран — заморозили UI ребилды.
+      _pushingChild = true;
+    } else if (status == AnimationStatus.dismissed ||
+        status == AnimationStatus.completed) {
+      _pushingChild = false;
+      // Если за время анимации пришёл setState — отыгрываем его сейчас,
+      // одним кадром, после завершения slide-in.
+      if (_pendingSetState && mounted) {
+        _pendingSetState = false;
+        setState(() {});
+      }
+    } else if (status == AnimationStatus.reverse) {
+      // Дочерний экран pop'ается — это нормальная ситуация,
+      // setState'ы здесь безопасны (мы снова становимся видимыми).
+      _pushingChild = false;
+    }
+  }
+
+  @override
   void dispose() {
+    _secAnim?.removeStatusListener(_onSecAnimStatus);
     AppState.I.removeListener(_onState);
     super.dispose();
   }
 
-  void _onState() => setState(() {});
+  void _onState() {
+    if (_pushingChild) {
+      _pendingSetState = true;
+      return;
+    }
+    if (mounted) setState(() {});
+  }
 
   Future<void> _pickZip() async {
     if (_picking) return;
@@ -223,7 +274,7 @@ class _UploadScreenState extends State<UploadScreen> {
                         SizedBox(
                           width: 48,
                           height: 48,
-                          child: CircularProgressIndicator(
+                          child: M3LoadingIndicator(
                               strokeWidth: 3,
                               color: AppColors.accent,
                               strokeCap: StrokeCap.round),

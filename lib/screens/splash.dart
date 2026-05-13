@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import '../widgets/m3_loading.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
@@ -32,15 +33,43 @@ class SplashScreen extends StatefulWidget {
   State<SplashScreen> createState() => _SplashScreenState();
 }
 
-class _SplashScreenState extends State<SplashScreen> {
+class _SplashScreenState extends State<SplashScreen>
+    with SingleTickerProviderStateMixin {
   // Стадии: 0 — онбординг + вставка ключа, 1 — разрешения.
   int _stage = 0;
   bool _loading = false;
   // Сообщение об ошибке. Намеренно НЕ показываем ничего для
   // «формат не похож на токен» / «пустой буфер» — если ключ не вставился,
   // юзеру и так очевидно по отсутствию перехода на следующий экран.
-  // Показываем только реальные сетевые/auth ошибки (401 от GitHub и т.п.).
+  // Показываем только реальные сетевые/auth ошибки (401 от GitHub и т.p.).
   String _error = '';
+
+  // Контроллер плавного появления фоновых слоёв (частицы + код-дождь).
+  // Юзер прямо просил: «частички при заходе должны появляться плавно а не
+  // сразу, примерно да секунд 5». Этот же контроллер срабатывает и при
+  // выходе из настроек (logout → SplashScreen пересоздаётся, _bgFade
+  // стартует с 0 и за 5 сек выходит на 1).
+  late final AnimationController _bgFade = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 5000),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    // Стартуем fade-in с лёгкой задержкой — пока проиграется slide-in
+    // самого SplashScreen (если он был запушен поверх настроек),
+    // фоны ещё не видны и не отвлекают.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _bgFade.forward();
+    });
+  }
+
+  @override
+  void dispose() {
+    _bgFade.dispose();
+    super.dispose();
+  }
 
   Future<void> _pasteToken() async {
     if (_loading) return;
@@ -122,56 +151,119 @@ class _SplashScreenState extends State<SplashScreen> {
   @override
   Widget build(BuildContext context) {
     final pal = context.pal;
-    // Никаких AnimatedContainer на смену фона: Scaffold.backgroundColor
-    // переключается мгновенно вместе с палитрой содержимого, и общий
-    // эффект — синхронная смена темы без "запаздывания" фона за
-    // иконками/текстом (старая 300ms анимация фона воспринималась как лаг).
+    // AnimatedContainer на корне даёт плавный переход цвета фона при
+    // смене темы (300мс). Содержимое (текст/иконки) ловит новый
+    // палитру мгновенно, но в сочетании с анимированным фоном это
+    // выглядит как естественная мягкая смена темы (как в Telegram).
+    // ВАЖНО: убрали AnimatedContainer вокруг body. Раньше при смене темы
+    // фон мягко перетекал 300мс, а ВСЁ остальное (текст/иконки/частицы)
+    // переключалось мгновенно — это и воспринималось как «лаг темы».
+    // Теперь все слои меняют цвет одновременно — переключение мгновенное
+    // и чистое.
+    // ВАЖНО: фоновые слои (_CodeRainBackground / _FeatureParticlesBackground)
+    // лежат СНАРУЖИ SafeArea и расползаются на весь экран — иначе сверху
+    // (под status bar) и снизу появлялась видимая «полоса», за которую
+    // строки кода и частицы не залетали.
+    // Listener тоже снаружи SafeArea — удержание пальца ловится на любой
+    // точке экрана, включая зону под статусбаром и навбаром.
     return Scaffold(
       backgroundColor: pal.bg,
-      body: SafeArea(
-        child: Stack(
-          children: [
-            // Основной контент стадии (онбординг / разрешения).
-            Positioned.fill(
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          // Фоновые слои (код-дождь + летящие фичи) живут ТОЛЬКО на
+          // онбординге (stage 0). На экране разрешений (stage 1) их быть
+          // не должно — юзер просил. AnimatedSwitcher даёт мягкий
+          // fade-out при переходе, чтобы они не «обрубались» резко.
+          Positioned.fill(
+            child: IgnorePointer(
               child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 360),
+                duration: const Duration(milliseconds: 280),
                 switchInCurve: Curves.easeOutCubic,
                 switchOutCurve: Curves.easeInCubic,
-                transitionBuilder: (child, anim) {
-                  final slide = Tween<Offset>(
-                    begin: const Offset(0.06, 0),
-                    end: Offset.zero,
-                  ).animate(anim);
-                  return FadeTransition(
-                    opacity: anim,
-                    child: SlideTransition(position: slide, child: child),
-                  );
-                },
                 child: _stage == 0
-                    ? _OnboardingStage(
-                        key: const ValueKey('onb'),
-                        loading: _loading,
-                        error: _error,
-                        onPaste: _pasteToken,
+                    ? FadeTransition(
+                        // Плавный fade-in 5 секунд при первом монтировании
+                        // splash-экрана. Спавн частиц и строк кода не
+                        // останавливаем, просто прозрачность слоя
+                        // ползёт от 0 к 1 — выглядит как «они постепенно
+                        // проявляются». Юзер: «при заходе должны
+                        // появляться плавно а не сразу, примерно да
+                        // секунд 5».
+                        opacity: CurvedAnimation(
+                          parent: _bgFade,
+                          curve: Curves.easeOutCubic,
+                        ),
+                        child: const Stack(
+                          key: ValueKey('bg0'),
+                          fit: StackFit.expand,
+                          children: [
+                            Positioned.fill(child: _CodeRainBackground()),
+                            Positioned.fill(
+                                child: _FeatureParticlesBackground()),
+                          ],
+                        ),
                       )
-                    : _PermissionsStage(
-                        key: const ValueKey('perm'),
-                        onStart: _finishToShell,
-                      ),
+                    : const SizedBox.expand(key: ValueKey('bg1')),
               ),
             ),
-            // Кнопка смены темы — небольшой круглый тогл в правом
-            // верхнем углу. Видна ТОЛЬКО на стадии онбординга:
-            // на экране разрешений она не нужна и визуально мешает
-            // success-чеку и заголовку "Ключ принят".
-            if (_stage == 0)
-              Positioned(
-                top: 8,
-                right: 12,
-                child: _ThemeToggleButton(),
+          ),
+          Positioned.fill(
+            child: Listener(
+              behavior: HitTestBehavior.translucent,
+              // Юзер: «ускорение при удержании совсем немного и очень
+              // плавное». Снизили таргет с 2.2× до 1.25× — анимации
+              // лишь чуть-чуть оживают под пальцем, без эффекта «они
+              // вдруг побежали». Плавность достигается тем, что в
+              // тиках частицы/код-дождь экспоненциально подъезжают к
+              // таргету (см. _onTick), а не прыгают на него мгновенно.
+              onPointerDown: (_) => _kSplashSpeedTarget.value = 1.25,
+              onPointerUp: (_) => _kSplashSpeedTarget.value = 1.0,
+              onPointerCancel: (_) => _kSplashSpeedTarget.value = 1.0,
+              child: SafeArea(
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 320),
+                        switchInCurve: Curves.easeOutCubic,
+                        switchOutCurve: Curves.easeInCubic,
+                        transitionBuilder: (child, anim) {
+                          final slide = Tween<Offset>(
+                            begin: const Offset(0.06, 0),
+                            end: Offset.zero,
+                          ).animate(anim);
+                          return FadeTransition(
+                            opacity: anim,
+                            child: SlideTransition(
+                                position: slide, child: child),
+                          );
+                        },
+                        child: _stage == 0
+                            ? _OnboardingStage(
+                                key: const ValueKey('onb'),
+                                loading: _loading,
+                                error: _error,
+                                onPaste: _pasteToken,
+                              )
+                            : _PermissionsStage(
+                                key: const ValueKey('perm'),
+                                onStart: _finishToShell,
+                              ),
+                      ),
+                    ),
+                    if (_stage == 0)
+                      Positioned(
+                        top: 8,
+                        right: 12,
+                        child: _ThemeToggleButton(),
+                      ),
+                  ],
+                ),
               ),
-          ],
-        ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -187,9 +279,10 @@ class _SplashScreenState extends State<SplashScreen> {
 /// Анимация:
 ///   • Иконка sun/moon меняется через `AnimatedSwitcher` с поворотом
 ///     на 180° и fade — небольшой «солнечно-лунный» спин.
-///   • Никакого AnimatedContainer на корне splash: фон переключается
-///     синхронно с цветами содержимого (по фидбэку, плавная анимация фона
-///     отставала от мгновенной смены текста/иконок и воспринималась как лаг).
+///   • Фон/border кнопки анимируется через `AnimatedContainer` (300мс).
+///   • Фон всего splash тоже анимируется через `AnimatedContainer`
+///     в корне `_SplashScreenState.build` — это даёт плавный переход
+///     цвета подложки при смене темы.
 class _ThemeToggleButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
@@ -207,19 +300,18 @@ class _ThemeToggleButton extends StatelessWidget {
         width: 44,
         height: 44,
         child: Center(
+          // Анимация 1-в-1 как у кнопки темы на экране профиля
+          // (см. ProfileScreen): новая иконка въезжает с поворотом
+          // 0.25→0 (90°→0°) + scale 0→1. Старая ушла «обратно» —
+          // AnimatedSwitcher играет тот же transitionBuilder в reverse.
+          // 220мс — длительность из профиля, чтобы переключение между
+          // экранами не выглядело по-разному.
           child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 320),
-            switchInCurve: Curves.easeOutCubic,
-            switchOutCurve: Curves.easeInCubic,
-            transitionBuilder: (child, anim) {
-              final rotate = Tween<double>(begin: 0.5, end: 0.0).animate(
-                CurvedAnimation(parent: anim, curve: Curves.easeOutCubic),
-              );
-              return FadeTransition(
-                opacity: anim,
-                child: RotationTransition(turns: rotate, child: child),
-              );
-            },
+            duration: const Duration(milliseconds: 220),
+            transitionBuilder: (child, anim) => RotationTransition(
+              turns: Tween<double>(begin: 0.25, end: 0.0).animate(anim),
+              child: ScaleTransition(scale: anim, child: child),
+            ),
             child: Iconify(
               iconName,
               key: ValueKey<bool>(isDark),
@@ -294,7 +386,14 @@ const List<_GhostFeature> _kGhostFeatures = [
   _GhostFeature('solar:flag-bold',               'Релизы'),
 ];
 
-class _OnboardingStage extends StatelessWidget {
+/// Глобальная "скорость" фоновых анимаций splash.
+/// 1.0 — спокойный режим, 2.2 — пользователь зажал палец где-то на экране.
+/// Каждый из фоновых слоёв (_FeatureParticlesBackground / _CodeRainBackground)
+/// мягко доводит свою локальную скорость до этого таргета на каждом тике —
+/// это и даёт «плавное ускорение при удержании».
+final ValueNotifier<double> _kSplashSpeedTarget = ValueNotifier<double>(1.0);
+
+class _OnboardingStage extends StatefulWidget {
   final bool loading;
   final String error;
   final Future<void> Function() onPaste;
@@ -306,28 +405,29 @@ class _OnboardingStage extends StatelessWidget {
   });
 
   @override
+  State<_OnboardingStage> createState() => _OnboardingStageState();
+}
+
+class _OnboardingStageState extends State<_OnboardingStage> {
+  @override
+  void dispose() {
+    _kSplashSpeedTarget.value = 1.0;
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final pal = context.pal;
-    // Хиро + фон лежат в Stack. Фон ниже, на нём анимация — она
-    // изолирована собственным RepaintBoundary внутри _FeatureParticlesBackground.
-    // Передний план (лого/текст/кнопка) тоже обёрнут в RepaintBoundary,
-    // чтобы каждый кадр фоновой анимации НЕ заставлял Flutter перерисовывать
-    // дерево хиро (это ключевое для 60fps).
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        const Positioned.fill(child: _FeatureParticlesBackground()),
-        Positioned.fill(
-          child: RepaintBoundary(
-            child: _OnboardingHero(
-              loading: loading,
-              error: error,
-              onPaste: onPaste,
-              pal: pal,
-            ),
-          ),
-        ),
-      ],
+    // Фоны (code rain + particles) и Listener для удержания пальца теперь
+    // живут на уровне _SplashScreen — снаружи SafeArea, во весь экран.
+    // Здесь остаётся только сам hero-контент онбординга.
+    return RepaintBoundary(
+      child: _OnboardingHero(
+        loading: widget.loading,
+        error: widget.error,
+        onPaste: widget.onPaste,
+        pal: pal,
+      ),
     );
   }
 }
@@ -348,173 +448,159 @@ class _OnboardingHero extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Стек: "лого + заголовок + подпись" в Center → группа
-    // математически по центру SafeArea (горизонтально И вертикально),
-    // независимо от высоты нижнего блока. Нижний блок (кнопка/ссылка/
-    // хинт) прижат к низу через Align(bottomCenter) и не влияет на
-    // позицию хиро.
-    return Stack(
-      fit: StackFit.expand,
+    return Column(
       children: [
-        Center(
+        // 1:1 — группа «лого+текст» строго посередине между верхом
+        // и нижним блоком кнопки. Раньше было 2:1 и группа уезжала вверх.
+        const Spacer(flex: 1),
+        // Лого GitHub. На светлой теме — акцентный фиолетовый,
+        // на тёмной — белый (как и было).
+        Iconify(
+          'mdi:github',
+          size: 156,
+          color: pal.isDark ? pal.text : AppColors.accent,
+        ),
+        const SizedBox(height: 20),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24),
           child: Column(
             mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              // Лого GitHub. На светлой теме — акцентный фиолетовый,
-              // на тёмной — белый (как и было).
-              Iconify(
-                'mdi:github',
-                size: 156,
-                color: pal.isDark ? pal.text : AppColors.accent,
+              Text(
+                'GitHub Pusher',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: -.3,
+                  color: pal.text,
+                ),
               ),
-              const SizedBox(height: 20),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      'GitHub Pusher',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: -.3,
-                        color: pal.text,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 320),
-                      child: Text(
-                        'всё, что нужно — на одном экране',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          fontSize: 14.5,
-                          color: pal.sub,
-                          height: 1.5,
-                        ),
-                      ),
-                    ),
-                  ],
+              const SizedBox(height: 10),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 320),
+                child: Text(
+                  'всё, что нужно — на одном экране',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 14.5,
+                    color: pal.sub,
+                    height: 1.5,
+                  ),
                 ),
               ),
             ],
           ),
         ),
-        // Нижний блок: кнопка + ссылка + ошибка/хинт. Прижат к низу
-        // SafeArea и не сдвигает центр хиро.
-        Align(
-          alignment: Alignment.bottomCenter,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(24, 0, 24, 4),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                PressScale(
-                  onTap: loading ? null : () => onPaste(),
-                  scale: 0.97,
-                  child: Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    decoration: BoxDecoration(
-                      color: AppColors.accent,
-                      borderRadius: BorderRadius.circular(18),
-                      boxShadow: [
-                        BoxShadow(
-                          color: AppColors.accent.withValues(alpha: 0.20),
-                          blurRadius: 20,
-                          offset: const Offset(0, 8),
-                        ),
-                      ],
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (loading)
-                          const SizedBox(
-                            width: 22,
-                            height: 22,
-                            child: CircularProgressIndicator(
-                              color: Colors.white,
-                              strokeWidth: 2.4,
-                              strokeCap: StrokeCap.round,
-                            ),
-                          )
-                        else
-                          const Iconify(
-                            'solar:clipboard-add-bold',
-                            size: 22,
+        const Spacer(flex: 1),
+        // Нижний блок: кнопка + ссылка + ошибка/хинт.
+        Padding(
+          padding: const EdgeInsets.fromLTRB(24, 0, 24, 4),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              PressScale(
+                onTap: loading ? null : () => onPaste(),
+                scale: 0.97,
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  decoration: BoxDecoration(
+                    color: AppColors.accent,
+                    borderRadius: BorderRadius.circular(18),
+                    boxShadow: [
+                      BoxShadow(
+                        color: AppColors.accent.withValues(alpha: 0.20),
+                        blurRadius: 20,
+                        offset: const Offset(0, 8),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (loading)
+                        const SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: M3LoadingIndicator(
                             color: Colors.white,
+                            strokeWidth: 2.4,
+                            strokeCap: StrokeCap.round,
                           ),
-                        const SizedBox(width: 10),
-                        Text(
-                          loading ? 'Проверяем…' : 'Вставить ключ',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 16,
-                            fontWeight: FontWeight.w600,
-                          ),
+                        )
+                      else
+                        const Iconify(
+                          'solar:clipboard-add-bold',
+                          size: 22,
+                          color: Colors.white,
                         ),
-                      ],
-                    ),
+                      const SizedBox(width: 10),
+                      Text(
+                        loading ? 'Проверяем…' : 'Вставить ключ',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                const SizedBox(height: 12),
-                PressScale(
-                  onTap: () => launchUrl(
-                    Uri.parse(
-                      'https://github.com/settings/tokens/new?scopes=repo,delete_repo,workflow&description=GitHub%20Pusher',
-                    ),
-                    mode: LaunchMode.externalApplication,
+              ),
+              const SizedBox(height: 12),
+              PressScale(
+                onTap: () => launchUrl(
+                  Uri.parse(
+                    'https://github.com/settings/tokens/new?scopes=repo,delete_repo,workflow&description=GitHub%20Pusher',
                   ),
-                  scale: 0.97,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Iconify(
-                          'solar:link-bold',
-                          size: 16,
+                  mode: LaunchMode.externalApplication,
+                ),
+                scale: 0.97,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Iconify(
+                        'solar:link-bold',
+                        size: 16,
+                        color: AppColors.accent,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Получить токен на GitHub',
+                        style: TextStyle(
                           color: AppColors.accent,
+                          fontSize: 14,
                         ),
-                        const SizedBox(width: 6),
-                        Text(
-                          'Получить токен на GitHub',
-                          style: TextStyle(
-                            color: AppColors.accent,
-                            fontSize: 14,
-                          ),
-                        ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
                 ),
-                SizedBox(
-                  height: error.isEmpty ? 6 : 22,
-                  child: error.isEmpty
-                      ? const SizedBox.shrink()
-                      : Text(
-                          error,
-                          style: const TextStyle(
-                            color: AppColors.red,
-                            fontSize: 13,
-                          ),
-                          textAlign: TextAlign.center,
+              ),
+              SizedBox(
+                height: error.isEmpty ? 6 : 22,
+                child: error.isEmpty
+                    ? const SizedBox.shrink()
+                    : Text(
+                        error,
+                        style: const TextStyle(
+                          color: AppColors.red,
+                          fontSize: 13,
                         ),
+                        textAlign: TextAlign.center,
+                      ),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(top: 2, bottom: 2),
+                child: Text(
+                  'Ваш токен хранится только на устройстве',
+                  style: TextStyle(color: pal.sub, fontSize: 12),
                 ),
-                Padding(
-                  padding: const EdgeInsets.only(top: 2, bottom: 2),
-                  child: Text(
-                    'Ваш токен хранится только на устройстве',
-                    style: TextStyle(color: pal.sub, fontSize: 12),
-                  ),
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ],
@@ -523,31 +609,31 @@ class _OnboardingHero extends StatelessWidget {
 }
 
 // =====================================================================
-//  Анимированный фон: «призрачные» описания функций плавают вокруг лого
+//  Анимированный фон: чипы-описания фич, плавающие ВОКРУГ логотипа
 // =====================================================================
 //
-// ПОВЕДЕНИЕ ЧАСТИЦ (переделано):
-//   • Частицы НЕ вылетают из-под лого. Они рождаются в кольце вокруг
-//     лого (на расстоянии ~170–320 пкс от центра), плавно появляются
-//     через fade-in и равномерно дрейфуют от центра к краю экрана.
-//   • Движение линейное (постоянная скорость) — без бурста/разгона,
-//     что выглядит спокойнее и НЕ воспринимается как «лаги».
-//   • Стартовый scale — ровный, близкий к 1.0 (никаких «из точки» при 0.35).
+// КАК УСТРОЕНО (важно для 60 fps и «без лагов»):
+//   • Один общий [Ticker] на весь фон. Список частиц меняется редко
+//     (новая раз в ~1.4с), поэтому setState вызывается только в момент
+//     спавна/смерти. Кадровые обновления (translate + opacity) идут
+//     через ValueNotifier<int> _frameTick → ValueListenableBuilder в
+//     каждом _ParticleView, поэтому ребилд локализован в листе.
+//   • Каждый _ParticleView обёрнут в RepaintBoundary — движение одной
+//     частицы НЕ заставляет соседние слои перерисовываться.
+//   • Цвета иконки/текста ФИКСИРОВАНЫ (не пересчитываются на кадр) —
+//     прозрачность через виджет Opacity, чтобы не убивать SVG raster
+//     cache на каждом кадре. Для 6 частиц saveLayer практически бесплатен,
+//     а вот пересоздание ColorFilter каждый кадр заметно дёргалось.
+//   • Никакого rotation/perspective/blur — только Transform.translate
+//     + Opacity, всё композируется на GPU.
 //
-// ПРОИЗВОДИТЕЛЬНОСТЬ (60 fps):
-//   • Один общий [Ticker] на весь фон. Кадровые обновления идут через
-//     ValueNotifier<int> _frameTick → ValueListenableBuilder в каждой
-//     _ParticleView. Никакого setState на каждый кадр.
-//   • Каждый _ParticleView в собственном RepaintBoundary; хиро тоже.
-//   • Альфа — через Color.withValues(alpha:); НИКАКОГО Opacity виджета.
-//   • Только Transform.translate + Transform.scale.
-//
-// ТРАЕКТОРИЯ ОДНОЙ ЧАСТИЦЫ (12–16s, t ∈ [0..1]):
-//   t = 0     → появляется в кольце вокруг лого, scale ~0.95–1.05, alpha 0
-//   t ~ 0.20  → alpha выходит на peak (0.55–0.85), easeOutCubic
-//   t ∈ [0.20–0.80] → равномерный дрейф наружу, alpha = peak
-//   t > 0.80  → плавное исчезновение (cube), чуть подрос (scale ~1.15)
-//   t = 1     → alpha 0, частица удаляется
+// ТРАЕКТОРИЯ ОДНОЙ ЧАСТИЦЫ (8–10s, t ∈ [0..1]):
+//   • Спавнится НА КОЛЬЦЕ радиусом ~110px от центра лого (логотип 156px,
+//     радиус 78 — между лого и частицей всегда ~30px воздуха, частицы
+//     никогда не заходят на лого).
+//   • Линейно по радиусу уплывает к радиусу 240–290px и растворяется.
+//   • Размер ПОЧТИ НЕ МЕНЯЕТСЯ: 0.96 → 1.04 (никаких «появлений из точки»).
+//   • Альфа: 0 → peak (за первые 22% времени) → держится → 0 (за последние 28%).
 
 class _FeatureParticlesBackground extends StatefulWidget {
   const _FeatureParticlesBackground();
@@ -560,32 +646,67 @@ class _FeatureParticlesBackground extends StatefulWidget {
 class _FeatureParticlesBackgroundState
     extends State<_FeatureParticlesBackground>
     with SingleTickerProviderStateMixin {
-  /// Максимум одновременно живых частиц. 6 — компромисс между «фон живой»
-  /// и «не нагружаем GPU на слабых устройствах».
-  static const int _kMaxParticles = 6;
+  /// Максимум одновременно живых частиц. Юзер просил «пореже» — снизили
+  /// с 7 до 4. Стало заметно спокойнее, без визуального шума.
+  static const int _kMaxParticles = 4;
+
+  /// Внутренний радиус «эмиссии» — это позиция ЦЕНТРА чипа. Чип имеет
+  /// заметную ширину (иконка ~22 + текст ~80–110), поэтому при r=110
+  /// его левая/правая половина (~50–60px) могла залетать на сам лого
+  /// (радиус 78). Юзер прямо просил «чтобы не заходили на лого».
+  /// Поднимаем эмиссию до 160 — чип всегда стоит снаружи логотипа.
+  static const double _kInnerRadius = 160.0;
+
+  /// Геометрический сдвиг центра лого относительно центра Stack'а.
+  /// Хиро в Column'е: Spacer(1) — Лого+Текст(~225) — Spacer(1) —
+  /// нижний блок(~200). При таком раскладе центр лого оказывается
+  /// примерно на 110px ВЫШЕ центра экрана (см. вывод формулы в
+  /// комментарии ниже). Используем как константу — для всех
+  /// разумных высот экрана это значение почти не плывёт.
+  ///
+  ///   freeH = H − heroBlock(225) − bottomBlock(200) = H − 425
+  ///   topSpacer = freeH/2 = (H − 425)/2
+  ///   logoCenterY = topSpacer + 78 = (H − 425)/2 + 78
+  ///   stackCenterY = H/2
+  ///   emitDy = logoCenterY − stackCenterY = (78 − 425/2) ≈ −134.5
+  static const double _kEmitDy = -134.5;
 
   late final Ticker _ticker;
-  Duration _now = Duration.zero;
-  Duration _lastSpawn = Duration.zero;
+  // Реальная и масштабированная "сцена времени". В сцену добавляется
+  // dt * speed, где speed плавно доводится до _kSplashSpeedTarget.value.
+  // Все частицы живут в этой "сцене" — поэтому скорость можно ускорять
+  // бесшовно прямо посреди жизни любой частицы (не нужно её пересоздавать).
+  Duration _realLast = Duration.zero;
+  int _scaledMicros = 0;
+  int _lastSpawnMicros = 0;
+  double _speed = 1.0;
+
   final math.Random _rnd = math.Random();
   final List<_Particle> _particles = [];
   int _featureCursor = 0;
   int _idCursor = 0;
 
-  /// «Тик кадра» в микросекундах. Каждый _ParticleView слушает его через
-  /// ValueListenableBuilder — ребилдятся только листья (одна частица),
-  /// а не вся стадия.
+  // Равномерное угловое распределение: золотой угол ~137.5°.
+  // Каждый следующий спавн — на (предыдущий + GOLDEN) с маленьким
+  // случайным джиттером. Это гарантирует, что частицы НЕ кучкуются
+  // в одной части экрана даже на коротком окне.
+  static const double _kGolden = 2.39996322972865332; // π * (3 - √5)
+  double _angleCursor = 0.0;
+
+  /// «Тик кадра» в МАСШТАБИРОВАННЫХ микросекундах. Каждый _ParticleView
+  /// слушает его через ValueListenableBuilder — ребилдятся только листья.
   final ValueNotifier<int> _frameTick = ValueNotifier<int>(0);
 
   @override
   void initState() {
     super.initState();
+    _angleCursor = _rnd.nextDouble() * 2 * math.pi;
     _ticker = createTicker(_onTick)..start();
-    // Pre-spawn пары частиц со сдвигом по времени — чтобы юзер увидел
-    // движение мгновенно при открытии экрана, а не пустой фон первые 2с.
-    _spawn(initialAgeFrac: 0.10);
-    _spawn(initialAgeFrac: 0.34);
-    _spawn(initialAgeFrac: 0.58);
+    // Pre-spawn убран. Юзер при открытии splash хочет плавное
+    // появление фонов: _bgFade FadeTransition 5с проявляет весь слой,
+    // включая частицы. Первая частица появится через _spawn в
+    // _onTick (спавн-пауза 2400–3000мс), и вряд ли юзер заметит
+    // отсутствие стартовых частиц на фоне 5-секундного фейда.
   }
 
   @override
@@ -596,82 +717,65 @@ class _FeatureParticlesBackgroundState
   }
 
   void _onTick(Duration elapsed) {
-    _now = elapsed;
-    // Спавним новую частицу каждые ~1500–2300ms, если есть место. Дистанция
-    // между спавнами больше, чем в «летящем на зрителя» варианте, потому
-    // что живут частицы дольше (12–16s) — при частом спавне экран
-    // был бы перегружен.
-    final spawnGap = 1500 + _rnd.nextInt(800);
-    final due = (elapsed - _lastSpawn).inMilliseconds >= spawnGap;
+    // dt в микросекундах
+    final dtMicros = (elapsed - _realLast).inMicroseconds.clamp(0, 250000);
+    _realLast = elapsed;
+
+    // Плавный ease скорости к таргету. Раньше 220000мкс (~220мс) —
+    // слишком резкое ускорение. Новый «полураспад» перехода скорости
+    // — ~600мс. Юзер прямо просил: «ускорение при удержании
+    // совсем немного и очень плавное» — и таргет снижен с 2.2×
+    // до 1.25× (см. _kSplashSpeedTarget в onPointerDown).
+    final target = _kSplashSpeedTarget.value;
+    final k = 1 - math.exp(-dtMicros / 600000.0);
+    _speed += (target - _speed) * k;
+
+    _scaledMicros += (dtMicros * _speed).round();
+
+    // Спавним новую частицу каждые ~2400–3000мс СЦЕНЫ — заметно реже,
+    // чем раньше (1300–1600мс). Юзер просил «пореже» — это раза в два
+    // спокойнее, и не создаёт визуального хаоса рядом с лого.
+    final spawnGap = 2400 + _rnd.nextInt(600);
+    final due = (_scaledMicros - _lastSpawnMicros) >= spawnGap * 1000;
     if (due && _particles.length < _kMaxParticles) {
       _spawn();
-      _lastSpawn = elapsed;
+      _lastSpawnMicros = _scaledMicros;
     }
 
     bool removed = false;
     for (int i = _particles.length - 1; i >= 0; i--) {
-      if (_particles[i].deadAt(_now)) {
+      if (_particles[i].deadAt(_scaledMicros)) {
         _particles.removeAt(i);
         removed = true;
       }
     }
 
-    // Триггерим репейнт всех живых частиц одним сигналом — но НЕ rebuild
-    // дерева. _frameTick → ValueListenableBuilder → внутренняя часть
-    // ребилдится только в листе RepaintBoundary'а.
-    _frameTick.value = elapsed.inMicroseconds;
+    _frameTick.value = _scaledMicros;
 
-    // setState нужен ТОЛЬКО когда состав частиц меняется (новая или
-    // умершая), потому что Stack рендерит фиксированный список children.
     if (removed && mounted) setState(() {});
   }
 
   void _spawn({double initialAgeFrac = 0.0}) {
     final feature = _kGhostFeatures[_featureCursor % _kGhostFeatures.length];
     _featureCursor++;
-
-    // Длинный жизненный цикл: частица дрейфует медленно и равномерно.
-    final durationMs = 12000 + _rnd.nextInt(4000); // 12–16s
-
-    // Стартовая позиция — в кольце ВОКРУГ лого, не под ним. Радиус
-    // равномерно выбирается из диапазона [170..320] пкс: 170 пкс — вне
-    // баундинг-бокса лого (размер 156, радиус ~78 + запас на текст под
-    // лого), 320 пкс — ближе к краям экрана.
-    final spawnAngle = _rnd.nextDouble() * 2 * math.pi;
-    final spawnDist = 170.0 + _rnd.nextDouble() * 150.0;
-    final startPos = Offset(
-      math.cos(spawnAngle) * spawnDist,
-      math.sin(spawnAngle) * spawnDist,
-    );
-
-    // Скорость — радиально НАРУЖУ от центра экрана с лёгким
-    // случайным отклонением. Низкая скорость (14–26 пкс/с) даёт ровное
-    // ненавязчивое движение — никаких бурстов.
-    final velAngle = spawnAngle + (_rnd.nextDouble() - 0.5) * 0.35;
-    final speedPxPerSec = 14.0 + _rnd.nextDouble() * 12.0;
-    final velocity = Offset(
-      math.cos(velAngle) * speedPxPerSec,
-      math.sin(velAngle) * speedPxPerSec,
-    );
-
-    // Ровный стартовый размер (± случайная вариация), без «из пятна» на
-    // 0.35. К концу лёгко подрастает (~1.10–1.20) — скромно, без
-    // фейлверков.
-    final startScale = 0.95 + _rnd.nextDouble() * 0.10;
-    final endScale = startScale + 0.10 + _rnd.nextDouble() * 0.10;
-
-    final peakAlpha = 0.55 + _rnd.nextDouble() * 0.30; // 0.55–0.85
-    final fontSize = 14.5 + _rnd.nextDouble() * 1.5;   // 14.5–16.0
+    final durationMs = 8000 + _rnd.nextInt(2000);          // 8–10s
+    // Равномерное угловое распределение по золотому углу + лёгкий джиттер.
+    _angleCursor = (_angleCursor + _kGolden) % (2 * math.pi);
+    final angle = _angleCursor + (_rnd.nextDouble() - 0.5) * 0.25;
+    // Сдвигаем endRadius вверх вместе с innerRadius (160), чтобы
+    // частица проходила тот же путь по длине, просто стартует дальше
+    // от лого. Раньше было 240–290.
+    final endRadius = 290.0 + _rnd.nextDouble() * 50.0;     // 290–340
+    final peakAlpha = 0.55 + _rnd.nextDouble() * 0.25;      // 0.55–0.80
+    final fontSize = 14.0 + _rnd.nextDouble() * 1.5;        // 14–15.5
     final startMicros =
-        _now.inMicroseconds - (durationMs * 1000 * initialAgeFrac).round();
+        _scaledMicros - (durationMs * 1000 * initialAgeFrac).round();
     _particles.add(_Particle(
       id: _idCursor++,
       feature: feature,
-      startPos: startPos,
-      velocity: velocity,
+      angle: angle,
       durationMs: durationMs,
-      startScale: startScale,
-      endScale: endScale,
+      endRadius: endRadius,
       peakAlpha: peakAlpha,
       fontSize: fontSize,
       startedAtMicros: startMicros,
@@ -683,13 +787,8 @@ class _FeatureParticlesBackgroundState
   Widget build(BuildContext context) {
     final pal = context.pal;
     final iconColor = AppColors.accent;
-    // Текст подписи — основной цвет темы (контраст), альфа применяется
-    // на каждый кадр через TextStyle.color.withValues(alpha:).
     final textColor = pal.text;
 
-    // LayoutBuilder больше не нужен — позиции и скорости частиц задаются
-    // относительно центра Stack'а (Alignment.center). Отрисовка выхода
-    // за край экрана обрезается Clip.hardEdge.
     return RepaintBoundary(
       child: Stack(
         alignment: Alignment.center,
@@ -700,6 +799,8 @@ class _FeatureParticlesBackgroundState
             _ParticleView(
               key: ValueKey<int>(p.id),
               particle: p,
+              innerRadius: _kInnerRadius,
+              emitDy: _kEmitDy,
               iconColor: iconColor,
               textColor: textColor,
               frameTick: _frameTick,
@@ -710,48 +811,41 @@ class _FeatureParticlesBackgroundState
   }
 }
 
-/// Данные одной дрейфующей «фичи». Все параметры траектории известны
-/// заранее — на каждый кадр просто пересчитываем pos/scale/alpha.
 class _Particle {
   final int id;
   final _GhostFeature feature;
-  /// Стартовая позиция в пикселях относительно центра Stack'а.
-  final Offset startPos;
-  /// Скорость в пикселях в секунду. Линейное (равномерное) движение.
-  final Offset velocity;
+  final double angle;
   final int durationMs;
-  final double startScale;
-  final double endScale;
+  final double endRadius;
   final double peakAlpha;
   final double fontSize;
   final int startedAtMicros;
   const _Particle({
     required this.id,
     required this.feature,
-    required this.startPos,
-    required this.velocity,
+    required this.angle,
     required this.durationMs,
-    required this.startScale,
-    required this.endScale,
+    required this.endRadius,
     required this.peakAlpha,
     required this.fontSize,
     required this.startedAtMicros,
   });
-  bool deadAt(Duration now) =>
-      (now.inMicroseconds - startedAtMicros) >= durationMs * 1000;
+  bool deadAt(int nowMicros) =>
+      (nowMicros - startedAtMicros) >= durationMs * 1000;
 }
 
-/// Виджет одной частицы. ValueListenableBuilder делает rebuild ТОЛЬКО
-/// этого внутреннего поддерева (Transform + Row(Iconify, Text)), а
-/// собственный RepaintBoundary локализует репейнт в отдельный слой.
 class _ParticleView extends StatelessWidget {
   final _Particle particle;
+  final double innerRadius;
+  final double emitDy;
   final Color iconColor;
   final Color textColor;
   final ValueNotifier<int> frameTick;
   const _ParticleView({
     super.key,
     required this.particle,
+    required this.innerRadius,
+    required this.emitDy,
     required this.iconColor,
     required this.textColor,
     required this.frameTick,
@@ -759,85 +853,357 @@ class _ParticleView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Чип строится ОДИН РАЗ с фиксированными цветами. На кадровом
+    // ребилде меняются только Transform.translate и Opacity — это
+    // даёт идеальную плавность: SVG-raster cache не инвалидируется.
+    final iconSize = particle.fontSize * 1.45;
+    final chip = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Iconify(
+          particle.feature.iconName,
+          size: iconSize,
+          color: iconColor,
+        ),
+        const SizedBox(width: 8),
+        Text(
+          particle.feature.text,
+          maxLines: 1,
+          softWrap: false,
+          style: TextStyle(
+            color: textColor,
+            fontSize: particle.fontSize,
+            fontWeight: FontWeight.w500,
+            letterSpacing: 0.1,
+          ),
+        ),
+      ],
+    );
+
     return RepaintBoundary(
       child: ValueListenableBuilder<int>(
         valueListenable: frameTick,
-        builder: (_, nowMicros, __) {
-          final ageMicros = nowMicros - particle.startedAtMicros;
-          if (ageMicros <= 0) return const SizedBox.shrink();
-          final durMicros = particle.durationMs * 1000;
-          if (ageMicros >= durMicros) return const SizedBox.shrink();
-          final t = ageMicros / durMicros;
-          final tSec = ageMicros / 1e6;
+        child: chip,
+        builder: (_, nowMicros, builtChip) {
+          final t = (nowMicros - particle.startedAtMicros) /
+              (particle.durationMs * 1000.0);
+          if (t <= 0.0 || t >= 1.0) return const SizedBox.shrink();
 
-          // Равномерное линейное движение — никакого разгона/бурста.
-          // Просто: pos = start + velocity * time.
-          final dx = particle.startPos.dx + particle.velocity.dx * tSec;
-          final dy = particle.startPos.dy + particle.velocity.dy * tSec;
+          // Радиус: linear от innerRadius до endRadius. Без квадратичного
+          // easing — хочется РОВНОЕ движение, а не «разгон к краю».
+          final r = innerRadius + (particle.endRadius - innerRadius) * t;
+          final dx = math.cos(particle.angle) * r;
+          final dy = math.sin(particle.angle) * r;
 
-          // Лёгкий ровный скейл от startScale к endScale (почти
-          // константа в районе ~1.0).
-          final scale = particle.startScale +
-              (particle.endScale - particle.startScale) * t;
+          // Размер ПРАКТИЧЕСКИ постоянен: 0.96 → 1.04. Никакого
+          // «появления из точки» — частица сразу почти финального размера.
+          final scale = 0.96 + 0.08 * t;
 
-          // Альфа: плавная появление (0–0.2, easeOutCubic), на середине
-          // держим peak, и плавно исчезаем (0.8–1.0, cube-out).
-          // Никаких скачков.
-          double alphaT;
-          if (t < 0.2) {
-            final s = t / 0.2;
-            // easeOutCubic: 1 - (1-s)^3
-            alphaT = 1.0 - (1.0 - s) * (1.0 - s) * (1.0 - s);
-          } else if (t < 0.8) {
-            alphaT = 1.0;
+          // Альфа: 0 → peak за первые 22% → держим → 0 за последние 28%.
+          double alpha;
+          if (t < 0.22) {
+            alpha = particle.peakAlpha * (t / 0.22);
+          } else if (t < 0.72) {
+            alpha = particle.peakAlpha;
           } else {
-            final s = (t - 0.8) / 0.2;
-            // (1-s)^3 — плавный fade-out
-            final inv = 1.0 - s;
-            alphaT = inv * inv * inv;
+            alpha = particle.peakAlpha * (1.0 - (t - 0.72) / 0.28);
           }
-          final alpha = particle.peakAlpha * alphaT;
           if (alpha <= 0.0) return const SizedBox.shrink();
 
-          // Цвета с пред-применённой альфой — НИКАКОГО Opacity-виджета
-          // (он делает saveLayer и убивает fps).
-          final ic = iconColor.withValues(alpha: alpha);
-          final tc = textColor.withValues(alpha: alpha);
-          final iconSize = particle.fontSize * 1.45;
-
-          // Stack alignment=center → child лежит layout-центром в центре
-          // Stack'а. Transform.translate сдвигает от этого центра на
-          // кумулятивный вектор (стартовая позиция + velocity*t).
-          return Transform.translate(
-            offset: Offset(dx, dy),
-            child: Transform.scale(
-              scale: scale,
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Iconify(
-                    particle.feature.iconName,
-                    size: iconSize,
-                    color: ic,
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    particle.feature.text,
-                    maxLines: 1,
-                    softWrap: false,
-                    style: TextStyle(
-                      color: tc,
-                      fontSize: particle.fontSize,
-                      fontWeight: FontWeight.w500,
-                      letterSpacing: 0.1,
-                    ),
-                  ),
-                ],
-              ),
-            ),
+          // Обёрточный Opacity создаёт saveLayer на каждый кадр →
+          // дорого. При alpha >= peakAlpha (22%–72% жизни частицы)
+          // alpha == const → можно просто не оборачивать. Это
+          // экономит ~1–2мс/кадр на 4 частицах.
+          final child = Transform.scale(scale: scale, child: builtChip);
+          final moved = Transform.translate(
+            offset: Offset(dx, dy + emitDy),
+            child: alpha >= particle.peakAlpha - 0.001
+                ? child
+                : Opacity(opacity: alpha, child: child),
           );
+          return moved;
         },
       ),
+    );
+  }
+}
+
+// =====================================================================
+// Фон: «дождь кода» — короткие строки git/cli печатаются в реальном
+// времени и медленно уплывают вверх. Распределяются по СЛОТАМ
+// (14 строк × лево/право), поэтому никогда не накладываются друг на
+// друга и не лезут в центр под лого. Скорость общая через
+// _kSplashSpeedTarget — при удержании пальца ускоряется так же, как
+// и частицы.
+// =====================================================================
+
+const List<String> _kCodeSnippets = [
+  'git add .',
+  'git commit -m "feat: splash polish"',
+  'git push origin main',
+  'git pull --rebase',
+  'git checkout -b feature/particles',
+  'git status',
+  'git log --oneline -n 5',
+  'gh pr create --fill',
+  'git stash pop',
+  'git fetch --all --prune',
+  'git switch main',
+  'flutter pub get',
+  'flutter build apk',
+  '→ pushed 3 objects',
+  '✓ build succeeded',
+  '* main 4f2a1b9',
+  'remote: Compressing objects: 100%',
+  'Counting objects: 12, done.',
+];
+
+class _CodeRainBackground extends StatefulWidget {
+  const _CodeRainBackground();
+  @override
+  State<_CodeRainBackground> createState() => _CodeRainBackgroundState();
+}
+
+class _CodeSlot {
+  final int row;
+  final bool right; // true = правая колонка, false = левая
+  bool busy = false;
+  _CodeSlot(this.row, this.right);
+}
+
+class _CodeLine {
+  final int id;
+  final String text;
+  final _CodeSlot slot;
+  final int startedAtMicros;
+  final int lifeMs;
+  int typedChars = 0;
+  _CodeLine({
+    required this.id,
+    required this.text,
+    required this.slot,
+    required this.startedAtMicros,
+    required this.lifeMs,
+  });
+  bool deadAt(int now) => (now - startedAtMicros) >= lifeMs * 1000;
+}
+
+class _CodeRainBackgroundState extends State<_CodeRainBackground>
+    with SingleTickerProviderStateMixin {
+  static const int _kRows = 14;
+  // Юзер прямо просил «строки кода реже». Снизили одновременных
+  // с 8 до 4. Спавн-пауза (gapMicros в _onTick) тоже выросла
+  // с 700мс до 1800мс — свободные слоты заполняются спокойно,
+  // по одной строке примерно каждые полторы-две секунды, а не вереницей.
+  static const int _kMaxLines = 4;
+
+  late final Ticker _ticker;
+  Duration _realLast = Duration.zero;
+  int _scaledMicros = 0;
+  int _lastSpawnMicros = -2000000;
+  double _speed = 1.0;
+  int _idCursor = 0;
+
+  final math.Random _rnd = math.Random();
+  final List<_CodeSlot> _slots = [];
+  final List<_CodeLine> _lines = [];
+  final ValueNotifier<int> _frameTick = ValueNotifier<int>(0);
+
+  @override
+  void initState() {
+    super.initState();
+    for (int r = 0; r < _kRows; r++) {
+      _slots.add(_CodeSlot(r, false));
+      _slots.add(_CodeSlot(r, true));
+    }
+    _ticker = createTicker(_onTick)..start();
+    // Никакого pre-spawn'а. Раньше было 4 строки пред-выведено «чтобы
+    // экран сразу не был пустым» — но юзер как раз хочет плавное
+    // появление (fade-in 5с + спавн-пауза 1800мс), и эти пред-
+    // выведенные строки жили вопреки фейду. Первая строка
+    // появится через _spawn в _onTick после первого gap'а.
+  }
+
+  @override
+  void dispose() {
+    _ticker.dispose();
+    _frameTick.dispose();
+    super.dispose();
+  }
+
+  void _onTick(Duration elapsed) {
+    final dtMicros = (elapsed - _realLast).inMicroseconds.clamp(0, 250000);
+    _realLast = elapsed;
+    final target = _kSplashSpeedTarget.value;
+    // 600000 мкс = ~600мс «полураспад» перехода скорости к таргету.
+    // Раньше было 220000 (~220мс) — слишком резкое ускорение.
+    // Юзер прямо просил: «ускорение при удержании совсем немного
+    // и очень плавное».
+    final k = 1 - math.exp(-dtMicros / 600000.0);
+    _speed += (target - _speed) * k;
+    _scaledMicros += (dtMicros * _speed).round();
+
+    // Каденция спавна: 1800мс сцены (раньше 700мс). Это в ~2.5 раза
+    // реже появляются новые строки — по прямой просьбе юзера.
+    const gapMicros = 1800 * 1000;
+    if (_scaledMicros - _lastSpawnMicros > gapMicros &&
+        _lines.length < _kMaxLines) {
+      _spawn();
+      _lastSpawnMicros = _scaledMicros;
+    }
+
+    bool removed = false;
+    for (int i = _lines.length - 1; i >= 0; i--) {
+      final l = _lines[i];
+      if (l.deadAt(_scaledMicros)) {
+        l.slot.busy = false;
+        _lines.removeAt(i);
+        removed = true;
+      }
+    }
+
+    _frameTick.value = _scaledMicros;
+    if (removed && mounted) setState(() {});
+  }
+
+  _CodeSlot? _pickSlot() {
+    final free = _slots.where((s) => !s.busy).toList();
+    if (free.isEmpty) return null;
+    return free[_rnd.nextInt(free.length)];
+  }
+
+  void _spawn({double initialAgeFrac = 0.0}) {
+    final slot = _pickSlot();
+    if (slot == null) return;
+    slot.busy = true;
+    final text = _kCodeSnippets[_rnd.nextInt(_kCodeSnippets.length)];
+    final lifeMs = 4200 + _rnd.nextInt(2200);
+    final start = _scaledMicros - (lifeMs * 1000 * initialAgeFrac).round();
+    _lines.add(_CodeLine(
+      id: _idCursor++,
+      text: text,
+      slot: slot,
+      startedAtMicros: start,
+      lifeMs: lifeMs,
+    ));
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Полупрозрачный акцент — заметно, но не отвлекает от лого.
+    final color = AppColors.accent.withValues(alpha: 0.42);
+
+    // Раньше здесь был ShaderMask с радиальным градиентом: центр
+    // прозрачный (под лого), края непрозрачные. Это создавало
+    // saveLayer НА КАЖДЫЙ КАДР — все текстовые виджеты
+    // перерастеризовались при каждом тике (typing-эффект, дрейф).
+    // На мобильных устройствах ShaderMask забирает 4-8мс/кадр,
+    // что и вызывало ощутимый jank, о котором юзер писал
+    // («ваще чото всё подлагивает»).
+    //
+    // Код-строки и так живут в фиксированных слотах (14 строк ×
+    // лево/право), а центр свободен — маска больше не нужна.
+    // RepaintBoundary остаётся: ребилды внутри _CodeLineView
+    // через ValueNotifier изолированы от остального дерева.
+    return RepaintBoundary(
+      child: ClipRect(
+        child: LayoutBuilder(
+          builder: (_, c) {
+            final rowH = c.maxHeight / _kRows;
+            return Stack(
+              fit: StackFit.expand,
+              children: [
+                for (final l in _lines)
+                  _CodeLineView(
+                    key: ValueKey<int>(l.id),
+                    line: l,
+                    rowTop: l.slot.row * rowH + rowH * 0.18,
+                    color: color,
+                    frameTick: _frameTick,
+                  ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _CodeLineView extends StatelessWidget {
+  final _CodeLine line;
+  final double rowTop;
+  final Color color;
+  final ValueNotifier<int> frameTick;
+  const _CodeLineView({
+    super.key,
+    required this.line,
+    required this.rowTop,
+    required this.color,
+    required this.frameTick,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<int>(
+      valueListenable: frameTick,
+      builder: (_, nowMicros, __) {
+        final age = nowMicros - line.startedAtMicros;
+        if (age < 0 || age >= line.lifeMs * 1000) {
+          return const SizedBox.shrink();
+        }
+        // Печатаем за первые 45% жизни.
+        final typedFrac =
+            (age / (line.lifeMs * 1000.0 * 0.45)).clamp(0.0, 1.0);
+        final chars = (typedFrac * line.text.length).floor();
+        final shown = line.text.substring(0, chars);
+
+        // Альфа: 400мс in / 700мс out.
+        final lifeMicros = line.lifeMs * 1000;
+        double a;
+        if (age < 400000) {
+          a = age / 400000.0;
+        } else if (age > lifeMicros - 700000) {
+          a = ((lifeMicros - age) / 700000.0).clamp(0.0, 1.0);
+        } else {
+          a = 1.0;
+        }
+
+        // Лёгкий дрейф вверх.
+        final lifeFrac = age / lifeMicros;
+        final dy = -lifeFrac * 24.0;
+
+        final caret = Container(
+          width: 5,
+          height: 11,
+          margin: const EdgeInsets.only(left: 2),
+          color: color.withValues(alpha: a * 0.75),
+        );
+        final textWidget = Text(
+          shown,
+          maxLines: 1,
+          softWrap: false,
+          overflow: TextOverflow.clip,
+          style: TextStyle(
+            fontFamily: 'monospace',
+            fontFeatures: const [FontFeature.tabularFigures()],
+            fontSize: 11,
+            height: 1.2,
+            color: color.withValues(alpha: a),
+          ),
+        );
+        final row = Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [textWidget, caret],
+        );
+        return Positioned(
+          top: rowTop + dy,
+          left: line.slot.right ? null : 12,
+          right: line.slot.right ? 12 : null,
+          child: RepaintBoundary(child: row),
+        );
+      },
     );
   }
 }
@@ -1053,8 +1419,9 @@ class _PermTile extends StatelessWidget {
             bottomLeft: radBot,
             bottomRight: radBot,
           ),
-          // Серая полоса-разделитель между тайлами убрана по фидбэку:
-          // экран разрешений стал визуально чище — без лишних линий.
+          // Раньше между плитками была серая полоса (BorderSide pal.sep).
+          // Убрана по запросу — плитки теперь визуально слитные.
+        
         ),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
         child: Row(

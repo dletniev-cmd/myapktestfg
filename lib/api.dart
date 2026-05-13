@@ -606,32 +606,76 @@ class GhApi {
       );
     }
 
-    final blobs = <Map<String, dynamic>>[];
-    var i = 0;
-    for (final entry in changed.entries) {
-      i++;
-      onProgress?.call(
-          'Загружаем ${entry.key}', 0.15 + 0.6 * (i / changed.length));
-      final body = jsonEncode({
-        'content': base64Encode(entry.value),
-        'encoding': 'base64',
-      });
-      final br = await http.post(
-        _u('/repos/$fullName/git/blobs'),
-        headers: {..._headers, 'Content-Type': 'application/json'},
-        body: body,
-      );
-      if (br.statusCode != 201) {
-        throw Exception('Blob ${entry.key}: ${br.statusCode}');
+    // ПАРАЛЛЕЛЬНАЯ заливка blob'ов через 4 worker'а — 1-в-1 с HTML
+    // эталоном пушара (см. github_pusher_v5_7.html: `const concurrency
+    // = 4`). Раньше тут был обычный for-await: каждый blob ждал
+    // предыдущего, и заливка 30 файлов в репо занимала 5–6 минут
+    // вместо 10 секунд в HTML-версии. Теперь мы запускаем до 4 POST
+    // /git/blobs одновременно, а порядок blob'ов в финальном tree
+    // строго совпадает с порядком в `changed` — для этого каждый
+    // worker'ом сохраняет результат под СВОИМ индексом в массиве, а
+    // не делает list.add().
+    //
+    // Заметки по реализации:
+    //   • Используем один долгоживущий http.Client — TCP/TLS-сессии
+    //     переиспользуются между запросами (без него каждый POST
+    //     открывает новый keep-alive socket).
+    //   • Прогресс считается через атомарный счётчик done, ребилдов
+    //     UI ровно столько же, сколько blob'ов (а не 1 на каждый
+    //     await).
+    //   • Если какой-то blob падает — пробрасываем исключение наверх
+    //     через Future.error внутри worker'а; Future.wait отдаст
+    //     первый ошибочный.
+    final entries = changed.entries.toList(growable: false);
+    final blobsByIndex = List<Map<String, dynamic>?>.filled(
+      entries.length, null,
+      growable: false,
+    );
+    final client = http.Client();
+    try {
+      int cursor = 0;
+      int done = 0;
+      final concurrency =
+          entries.length < 4 ? entries.length : 4; // не плодим лишних
+      Future<void> worker() async {
+        while (true) {
+          final my = cursor;
+          if (my >= entries.length) return;
+          cursor++;
+          final entry = entries[my];
+          final body = jsonEncode({
+            'content': base64Encode(entry.value),
+            'encoding': 'base64',
+          });
+          final br = await client.post(
+            _u('/repos/$fullName/git/blobs'),
+            headers: {..._headers, 'Content-Type': 'application/json'},
+            body: body,
+          );
+          if (br.statusCode != 201) {
+            throw Exception('Blob ${entry.key}: ${br.statusCode}');
+          }
+          final sha = (jsonDecode(br.body) as Map)['sha'] as String;
+          blobsByIndex[my] = {
+            'path': entry.key,
+            'mode': '100644',
+            'type': 'blob',
+            'sha': sha,
+          };
+          done++;
+          onProgress?.call(
+              'Загружаем ${entry.key}',
+              0.15 + 0.6 * (done / entries.length));
+        }
       }
-      final sha = (jsonDecode(br.body) as Map)['sha'] as String;
-      blobs.add({
-        'path': entry.key,
-        'mode': '100644',
-        'type': 'blob',
-        'sha': sha,
-      });
+      await Future.wait(
+          List.generate(concurrency, (_) => worker(), growable: false));
+    } finally {
+      client.close();
     }
+    final blobs = blobsByIndex
+        .whereType<Map<String, dynamic>>()
+        .toList(growable: false);
 
     onProgress?.call('Создаём дерево', 0.78);
     final tr = await http.post(

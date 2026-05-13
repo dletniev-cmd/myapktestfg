@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:photo_manager/photo_manager.dart';
+import 'm3_loading.dart';
 
 import '../iconify.dart';
 import '../theme.dart';
@@ -310,7 +311,7 @@ class _PhotoPickerSheetState extends State<_PhotoPickerSheet> {
           // strokeCap: StrokeCap.round — все кольца в приложении должны быть
           // с округлёнными концами. Раньше в пикере этот индикатор
           // был с резкими ровными торцами — выбивался из стиля.
-          child: CircularProgressIndicator(
+          child: M3LoadingIndicator(
             strokeWidth: 2.4,
             strokeCap: StrokeCap.round,
             valueColor: AlwaysStoppedAnimation<Color>(pal.accent),
@@ -538,7 +539,7 @@ class _ConfirmCheck extends StatelessWidget {
                     ? const SizedBox(
                         width: 16,
                         height: 16,
-                        child: CircularProgressIndicator(
+                        child: M3LoadingIndicator(
                           strokeWidth: 2.2,
                           strokeCap: StrokeCap.round,
                           valueColor:

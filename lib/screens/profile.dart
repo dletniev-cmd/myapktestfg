@@ -379,9 +379,16 @@ class _UploadCardState extends State<_UploadCard> {
     return PressScale(
       onTap: widget.onTap,
       scale: 0.97,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 280),
-        curve: Curves.easeOut,
+      // Раньше тут был AnimatedContainer(duration: 280мс) для самой
+      // карточки. При смене темы `pal.cont` менялся мгновенно, но
+      // AnimatedContainer плавно интерполировал старый цвет в новый
+      // 280мс — из-за этого карточка «отставала» от остального UI
+      // (баг прямо просил юзер). Меняем внешнюю карточку на обычный
+      // Container: цвет фона применяется в тот же кадр, что и у всех
+      // соседей. Внутренний 40×40 квадрат остаётся AnimatedContainer,
+      // т.к. там анимируется stage-цвет (purple → green → red) при
+      // смене статуса заливки — это не связано с темой.
+      child: Container(
         height: 132,
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(

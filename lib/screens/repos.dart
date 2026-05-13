@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../widgets/m3_loading.dart';
 
 import '../api.dart';
 import '../iconify.dart';
@@ -35,9 +36,12 @@ class _ReposScreenState extends State<ReposScreen> {
   String? _lastActiveFull;
 
   // Подписка на анимацию роута: блокируем `setState` от `_onState` во
-  // время slide-back анимации (когда экран уезжает назад), чтобы
-  // неожиданные обновления `myRepos()` не перетряхивали ListView в
-  // последние 280мс жизни экрана.
+  // время slide-IN и slide-BACK анимации. Сетевой запрос `_refresh()`
+  // тоже стартует только ПОСЛЕ окончания slide-in — иначе ответ
+  // myRepos() мог прийти прямо в середине 280мс slide-in и дёрнуть
+  // setState, что вызывало визуальный jank на первом открытии
+  // (юзер прямо жалуется: «лагает открытие списка репозиториев
+  // обычно это когда заходишь в приложение в первый раз»).
   //
   // Раньше тут также был флажок `_contentReady`, который ОТКЛАДЫВАЛ
   // монтаж ListView до окончания slide-in анимации (forward). На бумаге
@@ -49,6 +53,8 @@ class _ReposScreenState extends State<ReposScreen> {
   // ОК для одного кадра slide-in — поэтому теперь рендерим сразу.
   Animation<double>? _routeAnim;
   bool _isPopping = false;
+  bool _slideInDone = false;
+  bool _refreshPending = false;
 
   @override
   void initState() {
@@ -59,8 +65,21 @@ class _ReposScreenState extends State<ReposScreen> {
     // в build() реагировала на каждое нажатие клавиатуры.
     _q.addListener(_onQuery);
     if (AppState.I.repos.isEmpty && !AppState.I.reposLoading) {
-      _refresh();
+      // Откладываем сетевой запрос до конца slide-in анимации.
+      // Если за 350мс анимация так и не завершилась (например, route
+      // открылся без анимации) — стартуем всё равно, чтобы юзер не
+      // ждал список вечно.
+      _refreshPending = true;
+      Future<void>.delayed(const Duration(milliseconds: 350), () {
+        if (!mounted) return;
+        if (_refreshPending) _kickRefresh();
+      });
     }
+  }
+
+  void _kickRefresh() {
+    _refreshPending = false;
+    _refresh();
   }
 
   @override
@@ -72,6 +91,16 @@ class _ReposScreenState extends State<ReposScreen> {
       _routeAnim = anim;
       _routeAnim?.addStatusListener(_routeAnimStatus);
     }
+    // Если экрана нет в каком-либо роуте (например, мы внутри
+    // IndexedStack у Shell — табы переключаются без push-анимации),
+    // то slide-in считается уже завершённым: разблокируем setState
+    // и сразу же отпускаем отложенный refresh.
+    if (anim == null || anim.status == AnimationStatus.completed) {
+      if (!_slideInDone) {
+        _slideInDone = true;
+        if (_refreshPending) _kickRefresh();
+      }
+    }
   }
 
   void _routeAnimStatus(AnimationStatus status) {
@@ -80,8 +109,16 @@ class _ReposScreenState extends State<ReposScreen> {
     // dispose), чтобы поздний ответ `myRepos()` не дёргал ListView.
     if (status == AnimationStatus.reverse) {
       _isPopping = true;
-    } else if (status == AnimationStatus.completed ||
-        status == AnimationStatus.dismissed) {
+    } else if (status == AnimationStatus.completed) {
+      _isPopping = false;
+      // Slide-in закончился — теперь можно безопасно стартовать
+      // отложенный сетевой запрос: ответ myRepos() уже не попадёт
+      // в кадры slide-анимации.
+      if (!_slideInDone) {
+        _slideInDone = true;
+        if (_refreshPending) _kickRefresh();
+      }
+    } else if (status == AnimationStatus.dismissed) {
       _isPopping = false;
     }
   }
@@ -122,8 +159,10 @@ class _ReposScreenState extends State<ReposScreen> {
       // Если мы прямо сейчас уезжаем назад — обновляем только snapshot
       // (чтобы он остался консистентным), но НЕ запускаем setState.
       // ListView не пере-построится посреди slide-back анимации, и
-      // закрытие пройдёт плавно.
+      // закрытие пройдёт плавно. То же самое относится и к slide-IN:
+      // пока экран не доехал, любой setState бьёт по анимации.
       if (_isPopping) return;
+      if (!_slideInDone) return;
       if (mounted) setState(() {});
     }
   }
@@ -180,7 +219,7 @@ class _ReposScreenState extends State<ReposScreen> {
                       child: SizedBox(
                         width: 36,
                         height: 36,
-                        child: CircularProgressIndicator(
+                        child: M3LoadingIndicator(
                           strokeWidth: 3,
                           color: AppColors.accent,
                           strokeCap: StrokeCap.round,

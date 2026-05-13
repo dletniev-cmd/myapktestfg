@@ -1,6 +1,7 @@
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import '../widgets/m3_loading.dart';
 
 import '../iconify.dart';
 import '../navigation.dart';
@@ -495,7 +496,7 @@ class _ShotThumbState extends State<_ShotThumb> {
               child: SizedBox(
                 width: 28,
                 height: 28,
-                child: CircularProgressIndicator(
+                child: M3LoadingIndicator(
                   strokeWidth: 2.4,
                   strokeCap: StrokeCap.round,
                   valueColor:

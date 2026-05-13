@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../iconify.dart';
 import '../theme.dart';
+import 'm3_loading.dart';
 
 /// Общие виджеты UI: тайлы, кнопки, чипы, сегменты и пр.
 
@@ -543,7 +544,7 @@ class PushButton extends StatelessWidget {
               const SizedBox(
                 width: 22,
                 height: 22,
-                child: CircularProgressIndicator(
+                child: M3LoadingIndicator(
                     color: Colors.white,
                     strokeWidth: 2.4,
                     strokeCap: StrokeCap.round),
@@ -935,12 +936,17 @@ class BlurredChip extends StatelessWidget {
   }
 }
 
-/// Кнопка обновления (refresh) с плавной анимацией вращения иконки во
-/// время выполнения запроса. Раньше при тапе менялся цвет иконки на
-/// `AppColors.accent` (фиолетовый), что выглядело как «застряло»
-/// (баг n7281). Теперь — цвет не меняется, но иконка плавно крутится,
-/// пока `spinning == true`.
-class RotatingRefreshBtn extends StatefulWidget {
+/// Кнопка обновления (refresh).
+///
+/// Пока запрос НЕ идёт — показывается обычная иконка `solar:refresh-linear`
+/// в цвете текста темы. Когда `spinning == true`, иконка заменяется на
+/// Material 3 Expressive Loading Indicator (морфящийся полигон). Юзер
+/// прямо просил «новую анимацию loading-indicator» из M3:
+/// https://m3.material.io/components/loading-indicator/overview
+///
+/// Замена идёт через AnimatedSwitcher с лёгким cross-fade + scale, чтобы
+/// в момент тапа не было резкого «прыжка» иконки.
+class RotatingRefreshBtn extends StatelessWidget {
   final bool spinning;
   final VoidCallback? onTap;
   final double size;
@@ -952,54 +958,33 @@ class RotatingRefreshBtn extends StatefulWidget {
     this.size = 36,
     this.iconSize = 22,
   });
-  @override
-  State<RotatingRefreshBtn> createState() => _RotatingRefreshBtnState();
-}
-
-class _RotatingRefreshBtnState extends State<RotatingRefreshBtn>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _c = AnimationController(
-      vsync: this, duration: const Duration(milliseconds: 900));
-
-  @override
-  void initState() {
-    super.initState();
-    if (widget.spinning) _c.repeat();
-  }
-
-  @override
-  void didUpdateWidget(covariant RotatingRefreshBtn old) {
-    super.didUpdateWidget(old);
-    if (widget.spinning && !_c.isAnimating) {
-      _c.repeat();
-    } else if (!widget.spinning && _c.isAnimating) {
-      // Доводим до конца оборота, чтобы не «дёргалось» — затем стоп.
-      _c.forward().then((_) => _c.stop());
-    }
-  }
-
-  @override
-  void dispose() {
-    _c.dispose();
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {
     final pal = context.pal;
     return _PressOpacity(
-      onTap: widget.onTap,
+      onTap: onTap,
       child: SizedBox(
-        width: widget.size,
-        height: widget.size,
+        width: size,
+        height: size,
         child: Center(
-          child: AnimatedBuilder(
-            animation: _c,
-            builder: (_, __) => Transform.rotate(
-              angle: _c.value * 6.283185307179586,
-              child: Iconify('solar:refresh-linear',
-                  size: widget.iconSize, color: pal.text),
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 200),
+            transitionBuilder: (child, anim) => FadeTransition(
+              opacity: anim,
+              child: ScaleTransition(scale: anim, child: child),
             ),
+            child: spinning
+                ? SizedBox(
+                    key: const ValueKey('m3'),
+                    width: iconSize + 2,
+                    height: iconSize + 2,
+                    child: M3LoadingIndicator(color: AppColors.accent),
+                  )
+                : Iconify('solar:refresh-linear',
+                    key: const ValueKey('icon'),
+                    size: iconSize,
+                    color: pal.text),
           ),
         ),
       ),

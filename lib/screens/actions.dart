@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import '../widgets/m3_loading.dart';
 
 import '../api.dart';
 import '../iconify.dart';
@@ -261,7 +262,7 @@ class _ActionsScreenState extends State<ActionsScreen>
       return wrap(Padding(
         padding: const EdgeInsets.only(top: 80),
         child: Center(
-            child: CircularProgressIndicator(
+            child: M3LoadingIndicator(
                 color: AppColors.accent, strokeCap: StrokeCap.round)),
       ));
     }
@@ -357,12 +358,10 @@ class _LiveHead extends StatefulWidget {
 }
 
 class _LiveHeadState extends State<_LiveHead>
-    with TickerProviderStateMixin {
+    with SingleTickerProviderStateMixin {
   late final AnimationController _dotCtrl =
       AnimationController(vsync: this, duration: const Duration(seconds: 2))
         ..repeat(reverse: true);
-  late final AnimationController _spinCtrl = AnimationController(
-      vsync: this, duration: const Duration(milliseconds: 900));
 
   @override
   void didUpdateWidget(covariant _LiveHead old) {
@@ -376,15 +375,14 @@ class _LiveHeadState extends State<_LiveHead>
         ..reset()
         ..repeat(reverse: true);
     }
-    if (widget.spinCounter != old.spinCounter) {
-      _spinCtrl.forward(from: 0);
-    }
+    // Раньше тут крутили _spinCtrl на каждый refresh-тик. Теперь
+    // анимация loading-indicator живёт внутри AnimatedSwitcher на самой
+    // кнопке (см. ниже) и привязана к `widget.loading`, а не к counter.
   }
 
   @override
   void dispose() {
     _dotCtrl.dispose();
-    _spinCtrl.dispose();
     super.dispose();
   }
 
@@ -613,25 +611,14 @@ class _LiveHeadState extends State<_LiveHead>
             ),
           ),
           const SizedBox(width: 12),
-          GestureDetector(
+          // Юзер прямо просил: «убери подложку у кнопки обновить на
+          // экране Actions, и сделай одинаковым размером как и у кнопки
+          // в списке репо». RotatingRefreshBtn с дефолтами (size=36,
+          // iconSize=22) — это ровно та же кнопка, что и в repos.dart
+          // и других экранах. Без `pal.cont` подложки.
+          RotatingRefreshBtn(
+            spinning: widget.loading,
             onTap: widget.onRefresh,
-            child: Container(
-              width: 38,
-              height: 38,
-              decoration: BoxDecoration(
-                color: pal.cont,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              alignment: Alignment.center,
-              child: AnimatedBuilder(
-                animation: _spinCtrl,
-                builder: (_, __) => Transform.rotate(
-                  angle: _spinCtrl.value * 6.283,
-                  child: Iconify('solar:refresh-bold',
-                      size: 18, color: pal.text),
-                ),
-              ),
-            ),
           ),
         ],
       ),
@@ -1192,38 +1179,48 @@ class _RunProgressBarState extends State<RunProgressBar>
   Widget build(BuildContext context) {
     final pal = context.pal;
     final p = widget.progress.clamp(0.0, 1.0);
-    return Container(
-      height: 6,
-      decoration: BoxDecoration(
-        color: pal.cont2,
-        borderRadius: BorderRadius.circular(6),
+    // RepaintBoundary вокруг всего бара — это критично, когда в
+    // списке actions одновременно живёт несколько активных ранов с
+    // прогресс-барами. Без RepaintBoundary shimmer на каждом баре
+    // инвалидирует layer общий с ListView, и при скролле каждый
+    // кадр перерисовывал ВСЕ карточки. С границей repaint shimmer'а
+    // изолирован в свой layer и не лезет за пределы 6px высоты.
+    return RepaintBoundary(
+      child: Container(
+        height: 6,
+        decoration: BoxDecoration(
+          color: pal.cont2,
+          borderRadius: BorderRadius.circular(6),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: LayoutBuilder(builder: (_, c) {
+          return Stack(
+            children: [
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 1000),
+                curve: const Cubic(.25, .46, .45, .94),
+                width: c.maxWidth * p,
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [AppColors.accent, AppColors.pink],
+                  ),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+              ),
+              Positioned.fill(
+                child: RepaintBoundary(
+                  child: AnimatedBuilder(
+                    animation: _shimmer,
+                    builder: (_, __) => CustomPaint(
+                      painter: _ShimmerPainter(_shimmer.value),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          );
+        }),
       ),
-      clipBehavior: Clip.antiAlias,
-      child: LayoutBuilder(builder: (_, c) {
-        return Stack(
-          children: [
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 1000),
-              curve: const Cubic(.25, .46, .45, .94),
-              width: c.maxWidth * p,
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [AppColors.accent, AppColors.pink],
-                ),
-                borderRadius: BorderRadius.circular(6),
-              ),
-            ),
-            Positioned.fill(
-              child: AnimatedBuilder(
-                animation: _shimmer,
-                builder: (_, __) => CustomPaint(
-                  painter: _ShimmerPainter(_shimmer.value),
-                ),
-              ),
-            ),
-          ],
-        );
-      }),
     );
   }
 }
@@ -1231,17 +1228,25 @@ class _RunProgressBarState extends State<RunProgressBar>
 class _ShimmerPainter extends CustomPainter {
   final double t;
   _ShimmerPainter(this.t);
+
+  // Префаб Paint и список цветов градиента вынесены за пределы paint()
+  // — раньше на каждый кадр выделялся новый Paint+List, что добавляло
+  // GC-давление при ~60 fps на каждый видимый прогресс-бар. Теперь —
+  // одно выделение на жизнь painter'а.
+  static final Paint _paint = Paint();
+  static const List<Color> _shimmerColors = [
+    Color(0x00FFFFFF),
+    Color(0x4DFFFFFF), // 30% white
+    Color(0x00FFFFFF),
+  ];
+
   @override
   void paint(Canvas canvas, Size size) {
     final left = -size.width + (size.width * 2) * t;
-    final paint = Paint()
-      ..shader = LinearGradient(colors: [
-        Colors.transparent,
-        Colors.white.withValues(alpha: .3),
-        Colors.transparent,
-      ]).createShader(Rect.fromLTWH(left, 0, size.width, size.height));
-    canvas.drawRect(
-        Rect.fromLTWH(0, 0, size.width, size.height), paint);
+    final rect = Rect.fromLTWH(0, 0, size.width, size.height);
+    _paint.shader = const LinearGradient(colors: _shimmerColors)
+        .createShader(Rect.fromLTWH(left, 0, size.width, size.height));
+    canvas.drawRect(rect, _paint);
   }
 
   @override
