@@ -296,7 +296,14 @@ const List<_GhostFeature> _kGhostFeatures = [
   _GhostFeature('solar:flag-bold',               'Релизы'),
 ];
 
-class _OnboardingStage extends StatelessWidget {
+/// Глобальная "скорость" фоновых анимаций splash.
+/// 1.0 — спокойный режим, 2.2 — пользователь зажал палец где-то на экране.
+/// Каждый из фоновых слоёв (_FeatureParticlesBackground / _CodeRainBackground)
+/// мягко доводит свою локальную скорость до этого таргета на каждом тике —
+/// это и даёт «плавное ускорение при удержании».
+final ValueNotifier<double> _kSplashSpeedTarget = ValueNotifier<double>(1.0);
+
+class _OnboardingStage extends StatefulWidget {
   final bool loading;
   final String error;
   final Future<void> Function() onPaste;
@@ -308,28 +315,47 @@ class _OnboardingStage extends StatelessWidget {
   });
 
   @override
+  State<_OnboardingStage> createState() => _OnboardingStageState();
+}
+
+class _OnboardingStageState extends State<_OnboardingStage> {
+  void _press() => _kSplashSpeedTarget.value = 2.2;
+  void _release() => _kSplashSpeedTarget.value = 1.0;
+
+  @override
+  void dispose() {
+    _kSplashSpeedTarget.value = 1.0;
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final pal = context.pal;
-    // Хиро + фон лежат в Stack. Фон ниже, на нём анимация — она
-    // изолирована собственным RepaintBoundary внутри _FeatureParticlesBackground.
-    // Передний план (лого/текст/кнопка) тоже обёрнут в RepaintBoundary,
-    // чтобы каждый кадр фоновой анимации НЕ заставлял Flutter перерисовывать
-    // дерево хиро (это ключевое для 60fps).
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        const Positioned.fill(child: _FeatureParticlesBackground()),
-        Positioned.fill(
-          child: RepaintBoundary(
-            child: _OnboardingHero(
-              loading: loading,
-              error: error,
-              onPaste: onPaste,
-              pal: pal,
+    // Listener на всём экране ловит палец, но НЕ перехватывает тапы по
+    // кнопкам (behavior: deferToChild) — так «Вставить ключ» и smile-toggle
+    // продолжают работать. Скорость доводится плавно — через ease в тиках.
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: (_) => _press(),
+      onPointerUp: (_) => _release(),
+      onPointerCancel: (_) => _release(),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          const Positioned.fill(child: _CodeRainBackground()),
+          const Positioned.fill(child: _FeatureParticlesBackground()),
+          Positioned.fill(
+            child: RepaintBoundary(
+              child: _OnboardingHero(
+                loading: widget.loading,
+                error: widget.error,
+                onPaste: widget.onPaste,
+                pal: pal,
+              ),
             ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
@@ -572,21 +598,35 @@ class _FeatureParticlesBackgroundState
   static const double _kEmitDy = -134.5;
 
   late final Ticker _ticker;
-  Duration _now = Duration.zero;
-  Duration _lastSpawn = Duration.zero;
+  // Реальная и масштабированная "сцена времени". В сцену добавляется
+  // dt * speed, где speed плавно доводится до _kSplashSpeedTarget.value.
+  // Все частицы живут в этой "сцене" — поэтому скорость можно ускорять
+  // бесшовно прямо посреди жизни любой частицы (не нужно её пересоздавать).
+  Duration _realLast = Duration.zero;
+  int _scaledMicros = 0;
+  int _lastSpawnMicros = 0;
+  double _speed = 1.0;
+
   final math.Random _rnd = math.Random();
   final List<_Particle> _particles = [];
   int _featureCursor = 0;
   int _idCursor = 0;
 
-  /// «Тик кадра» в микросекундах. Каждый _ParticleView слушает его через
-  /// ValueListenableBuilder — ребилдятся только листья (одна частица),
-  /// а не вся стадия.
+  // Равномерное угловое распределение: золотой угол ~137.5°.
+  // Каждый следующий спавн — на (предыдущий + GOLDEN) с маленьким
+  // случайным джиттером. Это гарантирует, что частицы НЕ кучкуются
+  // в одной части экрана даже на коротком окне.
+  static const double _kGolden = 2.39996322972865332; // π * (3 - √5)
+  double _angleCursor = 0.0;
+
+  /// «Тик кадра» в МАСШТАБИРОВАННЫХ микросекундах. Каждый _ParticleView
+  /// слушает его через ValueListenableBuilder — ребилдятся только листья.
   final ValueNotifier<int> _frameTick = ValueNotifier<int>(0);
 
   @override
   void initState() {
     super.initState();
+    _angleCursor = _rnd.nextDouble() * 2 * math.pi;
     _ticker = createTicker(_onTick)..start();
     // Pre-spawn — чтобы юзер увидел движение мгновенно при открытии,
     // равномерно разнесено по фазам.
@@ -605,24 +645,35 @@ class _FeatureParticlesBackgroundState
   }
 
   void _onTick(Duration elapsed) {
-    _now = elapsed;
-    // Спавним новую частицу каждые ~1300–1600мс — равномерно, не пачкой.
+    // dt в микросекундах
+    final dtMicros = (elapsed - _realLast).inMicroseconds.clamp(0, 50000);
+    _realLast = elapsed;
+
+    // Плавный ease скорости к таргету. Коэффициент подобран так, чтобы
+    // переход с 1.0 → 2.2 занимал ~250мс — заметно, но не резко.
+    final target = _kSplashSpeedTarget.value;
+    final k = 1 - math.exp(-dtMicros / 220000.0);
+    _speed += (target - _speed) * k;
+
+    _scaledMicros += (dtMicros * _speed).round();
+
+    // Спавним новую частицу каждые ~1300–1600мс СЦЕНЫ — равномерно.
     final spawnGap = 1300 + _rnd.nextInt(300);
-    final due = (elapsed - _lastSpawn).inMilliseconds >= spawnGap;
+    final due = (_scaledMicros - _lastSpawnMicros) >= spawnGap * 1000;
     if (due && _particles.length < _kMaxParticles) {
       _spawn();
-      _lastSpawn = elapsed;
+      _lastSpawnMicros = _scaledMicros;
     }
 
     bool removed = false;
     for (int i = _particles.length - 1; i >= 0; i--) {
-      if (_particles[i].deadAt(_now)) {
+      if (_particles[i].deadAt(_scaledMicros)) {
         _particles.removeAt(i);
         removed = true;
       }
     }
 
-    _frameTick.value = elapsed.inMicroseconds;
+    _frameTick.value = _scaledMicros;
 
     if (removed && mounted) setState(() {});
   }
@@ -631,12 +682,14 @@ class _FeatureParticlesBackgroundState
     final feature = _kGhostFeatures[_featureCursor % _kGhostFeatures.length];
     _featureCursor++;
     final durationMs = 8000 + _rnd.nextInt(2000);          // 8–10s
-    final angle = _rnd.nextDouble() * 2 * math.pi;          // 0..360°
+    // Равномерное угловое распределение по золотому углу + лёгкий джиттер.
+    _angleCursor = (_angleCursor + _kGolden) % (2 * math.pi);
+    final angle = _angleCursor + (_rnd.nextDouble() - 0.5) * 0.25;
     final endRadius = 240.0 + _rnd.nextDouble() * 50.0;     // 240–290
     final peakAlpha = 0.55 + _rnd.nextDouble() * 0.25;      // 0.55–0.80
     final fontSize = 14.0 + _rnd.nextDouble() * 1.5;        // 14–15.5
     final startMicros =
-        _now.inMicroseconds - (durationMs * 1000 * initialAgeFrac).round();
+        _scaledMicros - (durationMs * 1000 * initialAgeFrac).round();
     _particles.add(_Particle(
       id: _idCursor++,
       feature: feature,
@@ -697,8 +750,8 @@ class _Particle {
     required this.fontSize,
     required this.startedAtMicros,
   });
-  bool deadAt(Duration now) =>
-      (now.inMicroseconds - startedAtMicros) >= durationMs * 1000;
+  bool deadAt(int nowMicros) =>
+      (nowMicros - startedAtMicros) >= durationMs * 1000;
 }
 
 class _ParticleView extends StatelessWidget {
@@ -789,6 +842,281 @@ class _ParticleView extends StatelessWidget {
           );
         },
       ),
+    );
+  }
+}
+
+// =====================================================================
+// Фон: «дождь кода» — короткие строки git/cli печатаются в реальном
+// времени и медленно уплывают вверх. Распределяются по СЛОТАМ
+// (14 строк × лево/право), поэтому никогда не накладываются друг на
+// друга и не лезут в центр под лого. Скорость общая через
+// _kSplashSpeedTarget — при удержании пальца ускоряется так же, как
+// и частицы.
+// =====================================================================
+
+const List<String> _kCodeSnippets = [
+  'git add .',
+  'git commit -m "feat: splash polish"',
+  'git push origin main',
+  'git pull --rebase',
+  'git checkout -b feature/particles',
+  'git status',
+  'git log --oneline -n 5',
+  'gh pr create --fill',
+  'git stash pop',
+  'git fetch --all --prune',
+  'git switch main',
+  'flutter pub get',
+  'flutter build apk',
+  '→ pushed 3 objects',
+  '✓ build succeeded',
+  '* main 4f2a1b9',
+  'remote: Compressing objects: 100%',
+  'Counting objects: 12, done.',
+];
+
+class _CodeRainBackground extends StatefulWidget {
+  const _CodeRainBackground();
+  @override
+  State<_CodeRainBackground> createState() => _CodeRainBackgroundState();
+}
+
+class _CodeSlot {
+  final int row;
+  final bool right; // true = правая колонка, false = левая
+  bool busy = false;
+  _CodeSlot(this.row, this.right);
+}
+
+class _CodeLine {
+  final int id;
+  final String text;
+  final _CodeSlot slot;
+  final int startedAtMicros;
+  final int lifeMs;
+  int typedChars = 0;
+  _CodeLine({
+    required this.id,
+    required this.text,
+    required this.slot,
+    required this.startedAtMicros,
+    required this.lifeMs,
+  });
+  bool deadAt(int now) => (now - startedAtMicros) >= lifeMs * 1000;
+}
+
+class _CodeRainBackgroundState extends State<_CodeRainBackground>
+    with SingleTickerProviderStateMixin {
+  static const int _kRows = 14;
+  static const int _kMaxLines = 8;
+
+  late final Ticker _ticker;
+  Duration _realLast = Duration.zero;
+  int _scaledMicros = 0;
+  int _lastSpawnMicros = -2000000;
+  double _speed = 1.0;
+  int _idCursor = 0;
+
+  final math.Random _rnd = math.Random();
+  final List<_CodeSlot> _slots = [];
+  final List<_CodeLine> _lines = [];
+  final ValueNotifier<int> _frameTick = ValueNotifier<int>(0);
+
+  @override
+  void initState() {
+    super.initState();
+    for (int r = 0; r < _kRows; r++) {
+      _slots.add(_CodeSlot(r, false));
+      _slots.add(_CodeSlot(r, true));
+    }
+    _ticker = createTicker(_onTick)..start();
+    // Pre-spawn немного, чтобы экран сразу не был пустым.
+    for (int i = 0; i < 4; i++) _spawn(initialAgeFrac: i * 0.18);
+  }
+
+  @override
+  void dispose() {
+    _ticker.dispose();
+    _frameTick.dispose();
+    super.dispose();
+  }
+
+  void _onTick(Duration elapsed) {
+    final dtMicros = (elapsed - _realLast).inMicroseconds.clamp(0, 50000);
+    _realLast = elapsed;
+    final target = _kSplashSpeedTarget.value;
+    final k = 1 - math.exp(-dtMicros / 220000.0);
+    _speed += (target - _speed) * k;
+    _scaledMicros += (dtMicros * _speed).round();
+
+    // Каденция спавна: 700мс сцены.
+    const gapMicros = 700 * 1000;
+    if (_scaledMicros - _lastSpawnMicros > gapMicros &&
+        _lines.length < _kMaxLines) {
+      _spawn();
+      _lastSpawnMicros = _scaledMicros;
+    }
+
+    bool removed = false;
+    for (int i = _lines.length - 1; i >= 0; i--) {
+      final l = _lines[i];
+      if (l.deadAt(_scaledMicros)) {
+        l.slot.busy = false;
+        _lines.removeAt(i);
+        removed = true;
+      }
+    }
+
+    _frameTick.value = _scaledMicros;
+    if (removed && mounted) setState(() {});
+  }
+
+  _CodeSlot? _pickSlot() {
+    final free = _slots.where((s) => !s.busy).toList();
+    if (free.isEmpty) return null;
+    return free[_rnd.nextInt(free.length)];
+  }
+
+  void _spawn({double initialAgeFrac = 0.0}) {
+    final slot = _pickSlot();
+    if (slot == null) return;
+    slot.busy = true;
+    final text = _kCodeSnippets[_rnd.nextInt(_kCodeSnippets.length)];
+    final lifeMs = 4200 + _rnd.nextInt(2200);
+    final start = _scaledMicros - (lifeMs * 1000 * initialAgeFrac).round();
+    _lines.add(_CodeLine(
+      id: _idCursor++,
+      text: text,
+      slot: slot,
+      startedAtMicros: start,
+      lifeMs: lifeMs,
+    ));
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = context.pal;
+    // Полупрозрачный акцент — заметно, но не отвлекает от лого.
+    // Дополнительно мы оставляем "дыру" в центре через мягкую радиальную маску.
+    final color = AppColors.accent.withValues(alpha: 0.42);
+
+    return RepaintBoundary(
+      child: ShaderMask(
+        // Радиальная маска — центр прозрачный (под лого), к краям — непрозрачный.
+        // Это страхует от того, чтобы строки кода визуально не «налезали» на хиро.
+        shaderCallback: (rect) {
+          return RadialGradient(
+            center: Alignment.center,
+            radius: 0.95,
+            colors: const [
+              Color(0x00000000),
+              Color(0x00000000),
+              Color(0xFF000000),
+            ],
+            stops: const [0.0, 0.32, 0.78],
+          ).createShader(rect);
+        },
+        blendMode: BlendMode.dstIn,
+        child: ClipRect(
+          child: LayoutBuilder(
+            builder: (_, c) {
+              final rowH = c.maxHeight / _kRows;
+              return Stack(
+                fit: StackFit.expand,
+                children: [
+                  for (final l in _lines)
+                    _CodeLineView(
+                      key: ValueKey<int>(l.id),
+                      line: l,
+                      rowTop: l.slot.row * rowH + rowH * 0.18,
+                      color: color,
+                      frameTick: _frameTick,
+                    ),
+                ],
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CodeLineView extends StatelessWidget {
+  final _CodeLine line;
+  final double rowTop;
+  final Color color;
+  final ValueNotifier<int> frameTick;
+  const _CodeLineView({
+    super.key,
+    required this.line,
+    required this.rowTop,
+    required this.color,
+    required this.frameTick,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<int>(
+      valueListenable: frameTick,
+      builder: (_, nowMicros, __) {
+        final age = nowMicros - line.startedAtMicros;
+        if (age < 0 || age >= line.lifeMs * 1000) {
+          return const SizedBox.shrink();
+        }
+        // Печатаем за первые 45% жизни.
+        final typedFrac =
+            (age / (line.lifeMs * 1000.0 * 0.45)).clamp(0.0, 1.0);
+        final chars = (typedFrac * line.text.length).floor();
+        final shown = line.text.substring(0, chars);
+
+        // Альфа: 400мс in / 700мс out.
+        final lifeMicros = line.lifeMs * 1000;
+        double a;
+        if (age < 400000) {
+          a = age / 400000.0;
+        } else if (age > lifeMicros - 700000) {
+          a = ((lifeMicros - age) / 700000.0).clamp(0.0, 1.0);
+        } else {
+          a = 1.0;
+        }
+
+        // Лёгкий дрейф вверх.
+        final lifeFrac = age / lifeMicros;
+        final dy = -lifeFrac * 24.0;
+
+        final caret = Container(
+          width: 5,
+          height: 11,
+          margin: const EdgeInsets.only(left: 2),
+          color: color.withValues(alpha: a * 0.75),
+        );
+        final textWidget = Text(
+          shown,
+          maxLines: 1,
+          softWrap: false,
+          overflow: TextOverflow.clip,
+          style: TextStyle(
+            fontFamily: 'monospace',
+            fontFeatures: const [FontFeature.tabularFigures()],
+            fontSize: 11,
+            height: 1.2,
+            color: color.withValues(alpha: a),
+          ),
+        );
+        final row = Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [textWidget, caret],
+        );
+        return Positioned(
+          top: rowTop + dy,
+          left: line.slot.right ? null : 12,
+          right: line.slot.right ? 12 : null,
+          child: RepaintBoundary(child: row),
+        );
+      },
     );
   }
 }
