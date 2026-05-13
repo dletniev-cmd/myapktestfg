@@ -99,7 +99,24 @@ class _M3LinearProgressState extends State<M3LinearProgress>
   late final AnimationController _wave = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 1600),
-  )..repeat();
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    // Тикер запускаем ТОЛЬКО для wavy-варианта. Прямая полоса
+    // (`wavy=false`, используется в Actions/Run Detail) визуально
+    // не зависит от фазы — раньше она всё равно ребилдилась
+    // каждый кадр и давала лаг при активной сборке.
+    if (widget.wavy) _wave.repeat();
+  }
+
+  @override
+  void didUpdateWidget(M3LinearProgress old) {
+    super.didUpdateWidget(old);
+    if (widget.wavy && !_wave.isAnimating) _wave.repeat();
+    if (!widget.wavy && _wave.isAnimating) _wave.stop();
+  }
 
   @override
   void dispose() {
@@ -171,9 +188,11 @@ class _M3LinearPainter extends CustomPainter {
     final cy = size.height / 2;
     final p = (progress ?? 0.0).clamp(0.0, 1.0);
 
-    // Track gap по M3 spec — небольшой зазор между активным
-    // сегментом и треком. 4dp подходит почти для всех высот.
-    const double gap = 4.0;
+    // Track gap по M3 spec — зазор между активным сегментом
+    // и треком. 4dp в спеке, но с rounded-cap'ами на обоих концах
+    // визуальный gap становится меньше → берём 6dp чтобы он
+    // был чётко виден (юзер жаловался что не похоже на M3).
+    const double gap = 6.0;
 
     // Stop indicator (круглая точка) рисуется ТОЛЬКО для прямой
     // полосы (`wavy=false`). У wavy-полосы концы волны со
@@ -268,11 +287,17 @@ class _M3LinearPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _M3LinearPainter old) =>
-      old.progress != progress ||
-      old.wavePhase != wavePhase ||
-      old.activeColor != activeColor ||
-      old.trackColor != trackColor ||
-      old.thickness != thickness ||
-      old.wavy != wavy;
+  bool shouldRepaint(covariant _M3LinearPainter old) {
+    // Прямой вариант (wavy=false) НЕ зависит от фазы, поэтому
+    // никаких per-frame перерисовок. progress всё ещё триггерит
+    // repaint, что и нужно.
+    if (old.progress != progress ||
+        old.activeColor != activeColor ||
+        old.trackColor != trackColor ||
+        old.thickness != thickness ||
+        old.wavy != wavy) {
+      return true;
+    }
+    return wavy && old.wavePhase != wavePhase;
+  }
 }
