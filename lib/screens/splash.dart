@@ -19,13 +19,14 @@ import 'shell.dart';
 /// Состоит из двух стадий, между которыми переключаемся внутри одного
 /// Scaffold'а (через AnimatedSwitcher):
 ///
-///   1) [_OnboardingStage] — хиро: лого GitHub строго по центру, под ним
-///      заголовок «GitHub Pusher» и подпись «всё, что нужно — на одном
-///      экране», sticky-кнопка «Вставить ключ» внизу. На фоне — «призрачные»
-///      подписи функций (иконка + текст), которые ВЫЛЕТАЮТ ИЗ ЛОГО,
-///      плавно отлетают наружу и растворяются по краю экрана. Внутрь
-///      самого лого подписи не заходят. По тапу в любое место экрана
-///      частицы кратко (~1.5 с) ускоряются (см. [_FeatureParticlesBackground]).
+///   1) [_OnboardingStage] — статичный хиро: лого GitHub, заголовок и
+///      подпись «всё, что нужно — на одном экране», sticky-кнопка
+///      «Вставить ключ» внизу. На фоне — радиальные «призрачные»
+///      подписи функций, летящие от центра лого к краям во все
+///      360°; они плавно появляются за периметром хироблока
+///      (защитная рамка вокруг лого + заголовка + подзаголовка)
+///      и плавно гаснут к краям. При удержании пальца на экране
+///      анимация плавно ускоряется (см. [_FeatureParticlesBackground]).
 ///   2) [_PermissionsStage] — показывается после того, как токен проверен;
 ///      содержит тумблеры разрешений (уведомления, доступ к галерее)
 ///      и кнопку «Начать».
@@ -267,9 +268,23 @@ class _FadeRoute<T> extends PageRouteBuilder<T> {
 }
 
 // =====================================================================
-// Стадия 1. Онбординг (статичный хиро + частицы, вылетающие из лого)
+// Стадия 1. Онбординг (статичный хиро + летающие описания функций)
 // =====================================================================
 
+/// Один лейбл-описание функции, который может появиться как радиальная
+/// частица. Пул хардкожен в [_kLabelPool] ниже — рантайм случайно берёт
+/// из него лейблы для очередной «частицы» и подписывает её Iconify-иконкой.
+class _LabelFeature {
+  final String iconName;
+  final String text;
+  const _LabelFeature(this.iconName, this.text);
+}
+
+/// Стейтфул-обёртка над сценой онбординга. Хранит ValueNotifier
+/// `_boostTick` — на каждый тап увеличиваем на 1. Фон подписан
+/// на этот тик: на изменение поднимает целевую скорость до
+/// [_kBoostFactor] и держит её [_kBoostHoldMs] мс, затем плавно
+/// возвращает к 1.0.
 class _OnboardingStage extends StatefulWidget {
   final bool loading;
   final String error;
@@ -286,9 +301,9 @@ class _OnboardingStage extends StatefulWidget {
 }
 
 class _OnboardingStageState extends State<_OnboardingStage> {
-  /// Сигнал «тапни — ускорь частицы». Каждый pointerDown по любой части
-  /// экрана инкрементирует это значение; [_FeatureParticlesBackground]
-  /// подписан и поднимает локальную скорость анимации на ~1.5 секунды.
+  /// Счётчик тапов по экрану. Каждый pointerDown инкрементит — фон
+  /// слышит это в [_FeatureParticlesBackgroundState._onBoost] и кратко
+  /// ускоряет анимацию.
   final ValueNotifier<int> _boostTick = ValueNotifier<int>(0);
 
   @override
@@ -300,12 +315,19 @@ class _OnboardingStageState extends State<_OnboardingStage> {
   @override
   Widget build(BuildContext context) {
     final pal = context.pal;
-    // Listener с translucent-поведением ловит все тапы в bounds, НО НЕ
-    // блокирует их — нижележащие GestureDetector'ы (кнопка «Вставить ключ»,
-    // ссылка «Получить токен», тогл темы) продолжают получать события.
+    // Listener верхнего уровня с HitTestBehavior.translucent — ловит
+    // ВСЕ pointer down события для буста анимации, но НЕ блокирует
+    // доставку событий лежащим ниже виджетам (кнопка «Вставить ключ»,
+    // ссылка «Получить токен на GitHub», тогл темы — работают как
+    // обычно).
     return Listener(
       behavior: HitTestBehavior.translucent,
       onPointerDown: (_) => _boostTick.value = _boostTick.value + 1,
+      // Хиро + фон лежат в Stack. Фон ниже, на нём анимация — она
+      // изолирована собственным RepaintBoundary внутри _FeatureParticlesBackground.
+      // Передний план (лого/текст/кнопка) тоже обёрнут в RepaintBoundary,
+      // чтобы каждый кадр фоновой анимации НЕ заставлял Flutter
+      // перерисовывать дерево хиро (это ключевое для 60fps).
       child: Stack(
         fit: StackFit.expand,
         children: [
@@ -337,8 +359,8 @@ class _OnboardingHero extends StatelessWidget {
   final AppPalette pal;
   const _OnboardingHero({
     required this.loading,
-    required this.error,
     required this.onPaste,
+    required this.error,
     required this.pal,
   });
 
@@ -346,47 +368,52 @@ class _OnboardingHero extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        // Группа «лого + заголовок + подзаголовок» строго по центру
+        // Группа «лого + заголовок + подпись» строго по центру
         // свободной области (равные Spacer'ы сверху и снизу до CTA).
         const Spacer(),
-        // Лого GitHub. На светлой теме — акцентный фиолетовый,
-        // на тёмной — белый (как и было).
-        Iconify(
-          'mdi:github',
-          size: _kLogoSize,
-          color: pal.isDark ? pal.text : AppColors.accent,
-        ),
-        const SizedBox(height: 20),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                'GitHub Pusher',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: -.3,
-                  color: pal.text,
-                ),
-              ),
-              const SizedBox(height: 10),
-              ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 320),
-                child: Text(
-                  'всё, что нужно — на одном экране',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 14.5,
-                    color: pal.sub,
-                    height: 1.5,
+        Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Лого GitHub. На светлой теме — акцентный фиолетовый,
+            // на тёмной — белый.
+            Iconify(
+              'mdi:github',
+              size: _kLogoSize,
+              color: pal.isDark ? pal.text : AppColors.accent,
+            ),
+            const SizedBox(height: 20),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'GitHub Pusher',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: -.3,
+                      color: pal.text,
+                    ),
                   ),
-                ),
+                  const SizedBox(height: 10),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 320),
+                    child: Text(
+                      'всё, что нужно — на одном экране',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 14.5,
+                        color: pal.sub,
+                        height: 1.5,
+                      ),
+                    ),
+                  ),
+                ],
               ),
-            ],
-          ),
+            ),
+          ],
         ),
         const Spacer(),
         // Нижний блок: кнопка + ссылка + ошибка/хинт.
@@ -505,114 +532,109 @@ class _OnboardingHero extends StatelessWidget {
 }
 
 // =====================================================================
-//  Анимированный фон: «призрачные» подписи вылетают из лого и тают
+//  Анимированный фон: радиальные подписи функций от центра к краям
 // =====================================================================
 //
-// КАК УСТРОЕНО:
-//   • Подписи (иконка + текст из [_kFeaturePool]) спавнятся не в каком-то
-//     фиксированном месте, а ровно на радиусе [_kLogoRadius] от центра
-//     экрана — это «ободок» вокруг логотипа. Внутрь лого они НЕ
-//     заходят никогда.
-//   • Каждая частица за время своей жизни (~6.5–8 с) плавно отлетает
-//     от лого до максимального радиуса [_radius] (≈ 62% min(W,H)),
-//     ускоряясь по [_easeOutCubic] (бойкий старт, мягкое замедление).
-//   • Альфа имеет огибающую 0→peak→0: появилась у края лого, доросла
-//     до 0.55, доплыла до края и плавно растворилась. Никаких
-//     Opacity-виджетов — альфа применяется напрямую к Color.withValues.
-//   • Углы вылета распределены по 360°, но с лёгким уклоном к
-//     горизонтали (0° / 180°), чтобы подписи реже залетали прямо
-//     поверх заголовка «GitHub Pusher» под лого.
-//   • Когда life >= 1, частица «перерождается» с новым углом, новой
-//     иконкой+текстом из пула и новым lifetime. Размер пула сильно
-//     больше количества частиц, так что подписи на экране почти не
-//     повторяются одновременно.
-//   • Один общий [Ticker] на весь фон. Каждый кадр продвигает
-//     локальное время [_localMs] на dt × speed (мс). [_speed] плавно
-//     стремится к [_speedTarget] через экспоненциальное сглаживание.
-//   • При тапе по экрану [_OnboardingStageState] инкрементит [boostTick],
-//     мы выставляем speedTarget=2.4 на 1.5 с — частицы кратко ускоряются
-//     и плавно возвращаются к обычной скорости.
-//   • Все ребилды локализованы: один RepaintBoundary на весь фон, и
-//     по одному на каждый [_ParticleView]. ValueListenableBuilder на
-//     _frameTick ребилдит только листья — setState за весь lifecycle
-//     не вызывается.
+// КАК УСТРОЕНО (важно для 60 fps на слабых девайсах):
+//   • Фиксированный пул из [_kParticleCount] «частиц». Каждая частица —
+//     это лейбл (Solar-иконка + короткая подпись), который летит из
+//     центра экрана к одному из 360° углов. Никакого спавна/удаления
+//     виджетов на каждом кадре: умершая частица «перерождается» (новый
+//     угол / лейбл / длительность / пик-альфа) ВНУТРИ того же объекта
+//     [_RadialParticle].
+//   • Один общий [Ticker] на весь фон. На каждый тик апдейтится только
+//     _animTimeMs (накопленное время с учётом текущего значения буста);
+//     это ValueNotifier<double>, на который подписан ValueListenableBuilder
+//     каждой _RadialParticleView — ребилдится только лист одной частицы,
+//     не вся стадия.
+//   • Защитная рамка вокруг хиро (лого + заголовок + подзаголовок):
+//     её координаты замеряются после первого кадра через GlobalKey
+//     (см. [_OnboardingStageState]). Частица, попавшая ВНУТРЬ — не
+//     рисуется (return SizedBox.shrink()). Снаружи альфа линейно
+//     поднимается от 0 до 1 на первых ~32 px от грани рамки — даёт
+//     эффект «выползания» подписей из-за периметра логотипа.
+//   • Радиус по времени: r = exitR · (t² · 0.5 + t · 0.5) — мягкий
+//     easeOut. Альфа во времени: fade-in 0..0.10, peak 0.10..0.82,
+//     fade-out 0.82..1.0 — частица плавно появляется и плавно гаснет.
+//   • Буст при удержании пальца: на каждый тик _boost экспоненциально
+//     интерполируется к 1.0 (без удержания) или к [_kBoostFactor]
+//     (с удержанием); _animTimeMs += dt · _boost. Никакого скачкообразного
+//     ускорения — анимация всегда остаётся плавной.
+//   • Каждый _RadialParticleView обёрнут в собственный RepaintBoundary,
+//     поэтому движение одной частицы НЕ заставляет соседние слои
+//     перерисовываться. Хиро (лого/заголовок) тоже в RepaintBoundary.
+//   • Альфа применяется напрямую к Color.withValues(alpha:) в
+//     colorFilter Iconify и TextStyle.color — НИКАКОГО Opacity-виджета
+//     (saveLayer убивает fps).
 
-/// Логотип GitHub на экране входа. Размер вынесен в константу, чтобы
-/// частицы могли посчитать «радиус лого» и не залетать внутрь.
-const double _kLogoSize = 156;
-/// Радиус спавна частиц: чуть больше радиуса лого, чтобы текст рядом
-/// с иконкой тоже не наезжал на silhouette лого.
-const double _kLogoRadius = _kLogoSize / 2 + 14;
-
-/// Описание одной подписи фичи (иконка + короткий текст).
-class _GhostFeature {
-  final String iconName;
-  final String text;
-  const _GhostFeature(this.iconName, this.text);
-}
-
-/// Пул подписей, из которого случайно достаём при каждом «рождении»
-/// частицы. Чем больше пул относительно [_kPopulation], тем реже на
-/// экране одновременно встречаются дубликаты.
-const List<_GhostFeature> _kFeaturePool = [
-  _GhostFeature('solar:gallery-add-bold', 'Скриншоты к багам'),
-  _GhostFeature('solar:cloud-upload-bold', 'Заливай файлы'),
-  _GhostFeature('solar:download-square-bold', 'Скачивай APK'),
-  _GhostFeature('solar:folder-with-files-bold', 'Все репозитории'),
-  _GhostFeature('solar:branching-paths-up-bold', 'Ветки и коммиты'),
-  _GhostFeature('solar:eye-bold', 'Следи за статусом'),
-  _GhostFeature('solar:rocket-bold', 'Запускай Actions'),
-  _GhostFeature('solar:bell-bold', 'Уведомления'),
-  _GhostFeature('solar:star-bold', 'Избранные репо'),
-  _GhostFeature('solar:check-circle-bold', 'Сборка готова'),
+/// Пул лейблов, из которого случайно берётся «начинка» очередной частицы.
+/// Длина пула > [_kParticleCount], так что в одном кадре повторов почти
+/// не бывает; даже если случайно совпало — это незаметно из-за разной
+/// фазы/альфы/направления.
+const List<_LabelFeature> _kLabelPool = [
+  _LabelFeature('solar:gallery-add-bold', 'Скриншоты к багам'),
+  _LabelFeature('solar:cloud-upload-bold', 'Заливай файлы'),
+  _LabelFeature('solar:download-square-bold', 'Скачивай APK'),
+  _LabelFeature('solar:folder-with-files-bold', 'Все репозитории'),
+  _LabelFeature('solar:branching-paths-up-bold', 'Ветки и коммиты'),
+  _LabelFeature('solar:eye-bold', 'Следи за статусом'),
+  _LabelFeature('solar:rocket-bold', 'Запускай Actions'),
+  _LabelFeature('solar:bell-bold', 'Уведомления'),
+  _LabelFeature('solar:star-bold', 'Избранные репо'),
+  _LabelFeature('solar:check-circle-bold', 'Сборка готова'),
+  _LabelFeature('solar:tag-bold', 'Релизы и теги'),
+  _LabelFeature('solar:bug-bold', 'Issues и баги'),
 ];
 
-/// Сколько частиц одновременно живёт на экране.
-const int _kPopulation = 10;
-/// Средний lifetime частицы (около этого ± [_kLifetimeJitterMs]).
-const int _kLifetimeAvgMs = 7200;
-const int _kLifetimeJitterMs = 1400;
+/// Размер лого GitHub на экране входа. Вынесен в константу, чтобы
+/// фоновые частицы посчитали от этого радиус «ободка» и никогда
+/// не залетали внутрь силуэта.
+const double _kLogoSize = 156;
+/// Радиус спавна частиц (от центра экрана): чуть больше
+/// радиуса лого, чтобы текст рядом с иконкой тоже не наезжал
+/// на silhouette.
+const double _kLogoRadius = _kLogoSize / 2 + 14;
 
-/// Параметры одной живой частицы. Поля мутабельные — при «перерождении»
-/// мы переиспользуем тот же объект (и тот же [_ParticleView] в дереве),
-/// чтобы не дёргать createElement/inflateWidget на каждый цикл.
-class _Particle {
-  /// Локальное время рождения (мс). Возраст частицы = _localMs - birthMs.
-  double birthMs;
-  /// Полное время жизни (мс).
-  double lifetimeMs;
-  /// Угол вылета (радианы, от центра экрана).
+const int _kParticleCount = 11;
+const double _kParticleDurMinMs = 7000;
+const double _kParticleDurSpanMs = 3500;
+/// Базовая пик-альфа: сравниваем с light темой на светло-сером фоне
+/// с базовым вариантом 0.5 это практически невидимо — подняли.
+const double _kParticlePeakMin = 0.65;
+const double _kParticlePeakSpan = 0.25;
+/// Сколько раз ускоряемся при тапе.
+const double _kBoostFactor = 2.4;
+/// Сколько держим ускорение после тапа до начала decay.
+const int _kBoostHoldMs = 1500;
+/// Коэффициент экспоненциального сглаживания скорости
+/// (`_boost += (target - _boost) * _kBoostEase`).
+const double _kBoostEase = 0.18;
+
+/// Изменяемое состояние одной радиальной частицы. Поля мутабельные:
+/// когда возраст частицы превышает [durMs], мы «перерождаем» её
+/// внутри того же объекта (см. [_FeatureParticlesBackgroundState._respawn]),
+/// чтобы не аллоцировать новые объекты в горячем пути.
+class _RadialParticle {
+  double bornAtMs;
+  double durMs;
   double angle;
-  /// Индекс в [_kFeaturePool] — какую подпись показывать.
-  int poolIdx;
-  /// Размер шрифта (px) — небольшая вариация на ±1.5 даёт ощущение
-  /// глубины (более крупные подписи кажутся ближе).
-  double fontSize;
-  _Particle({
-    required this.birthMs,
-    required this.lifetimeMs,
+  double peakAlpha;
+  int labelIndex;
+  _RadialParticle({
+    required this.bornAtMs,
+    required this.durMs,
     required this.angle,
-    required this.poolIdx,
-    required this.fontSize,
+    required this.peakAlpha,
+    required this.labelIndex,
   });
 }
 
-double _easeOutCubic(double x) {
-  final t = 1 - x;
-  return 1 - t * t * t;
-}
-
-/// Огибающая яркости: 0 → peak за первые 12%, плато до 70%, плавное
-/// растворение к концу жизни. peak задаём один раз.
-double _alphaEnvelope(double life, double peak) {
-  if (life < 0.12) return peak * (life / 0.12);
-  if (life < 0.70) return peak;
-  final k = (life - 0.70) / 0.30;
-  return peak * (1 - k);
-}
-
 class _FeatureParticlesBackground extends StatefulWidget {
+  /// Счётчик тапов по экрану. На каждое изменение (инкремент)
+  /// поднимаем целевую скорость до [_kBoostFactor] на [_kBoostHoldMs] мс,
+  /// потом плавно возвращаем к 1.0.
   final ValueListenable<int> boostTick;
+
   const _FeatureParticlesBackground({required this.boostTick});
 
   @override
@@ -624,101 +646,96 @@ class _FeatureParticlesBackgroundState
     extends State<_FeatureParticlesBackground>
     with SingleTickerProviderStateMixin {
   late final Ticker _ticker;
-
-  /// «Тик кадра» в микросекундах _localMs. Каждый _ParticleView слушает
-  /// его через ValueListenableBuilder — ребилдятся только листья.
-  final ValueNotifier<int> _frameTick = ValueNotifier<int>(0);
-
-  /// Внутренние часы анимации (мс). Идут как dt × _speed, поэтому при
-  /// boost'е сами «ускоряются» — все формулы за пределами здесь о speed
-  /// ничего знать не должны.
-  double _localMs = 0;
-  Duration _lastElapsed = Duration.zero;
-
-  /// Сглаженный множитель скорости. После тапа поднимаем target до 2.4
-  /// на 1500 мс, потом он сам уезжает обратно к 1.0 (экспоненциальное
-  /// сглаживание с k = 1 - exp(-dt * 3.5)).
-  double _speed = 1.0;
-  double _speedTarget = 1.0;
-  int _boostUntilMs = 0;
-
-  late final List<_Particle> _particles;
   final math.Random _rng = math.Random();
+  late final List<_RadialParticle> _particles;
+
+  /// Накопленное «время анимации» с учётом текущего значения буста.
+  /// На него опираются возраст/фаза каждой частицы. На каждый тик
+  /// мы добавляем `dt · _boost` и кладём новое значение в
+  /// `_animTimeMs.value` — ValueListenableBuilder в листьях частиц
+  /// перерисует только себя.
+  final ValueNotifier<double> _animTimeMs = ValueNotifier<double>(0);
+  Duration _lastElapsed = Duration.zero;
+  double _boost = 1.0;
+  /// Момент (эпоха, мс), до которого boost-таргет равен [_kBoostFactor].
+  /// После этого времени таргет = 1.0 и _boost экспоненциально
+  /// сходится к 1.0.
+  int _boostUntilEpochMs = 0;
 
   @override
   void initState() {
     super.initState();
-    // Распределяем рождения по фазам, чтобы при первом кадре частицы
-    // были на разных стадиях жизни — без визуального «залпа».
-    _particles = List.generate(_kPopulation, (i) {
-      final lifetime = _kLifetimeAvgMs +
-          (_rng.nextDouble() - 0.5) * 2 * _kLifetimeJitterMs;
-      final stagger = -lifetime * (i / _kPopulation);
-      return _Particle(
-        birthMs: stagger,
-        lifetimeMs: lifetime,
+    _particles = List.generate(_kParticleCount, (_) {
+      final dur =
+          _kParticleDurMinMs + _rng.nextDouble() * _kParticleDurSpanMs;
+      // Стартовый возраст — случайный отрезок от 0 до durMs, чтобы все
+      // частицы не вылетали одновременно из одной точки.
+      final age = _rng.nextDouble() * dur;
+      return _RadialParticle(
+        bornAtMs: -age,
+        durMs: dur,
         angle: _randomAngle(),
-        poolIdx: _rng.nextInt(_kFeaturePool.length),
-        fontSize: 14.0 + (_rng.nextDouble() - 0.5) * 2.6,
+        peakAlpha:
+            _kParticlePeakMin + _rng.nextDouble() * _kParticlePeakSpan,
+        labelIndex: _rng.nextInt(_kLabelPool.length),
       );
     });
-
     widget.boostTick.addListener(_onBoost);
-
-    _ticker = createTicker((elapsed) {
-      final delta = elapsed - _lastElapsed;
-      _lastElapsed = elapsed;
-      final dtSec = delta.inMicroseconds / 1e6;
-      // Никогда не двигаемся отрицательно/слишком сильно (защита от
-      // первого кадра, где elapsed может скакнуть).
-      final dt = dtSec.clamp(0.0, 0.05);
-
-      // Плавный возврат скорости.
-      final nowEpochMs = DateTime.now().millisecondsSinceEpoch;
-      if (nowEpochMs > _boostUntilMs) _speedTarget = 1.0;
-      final k = 1 - math.exp(-dt * 3.5);
-      _speed += (_speedTarget - _speed) * k;
-
-      _localMs += dt * 1000 * _speed;
-
-      // Перерождения. Делаем именно тут, чтобы _ParticleView не дёргал
-      // нашу скорость и пул — он только читает уже актуальные поля.
-      for (final p in _particles) {
-        final age = _localMs - p.birthMs;
-        if (age >= p.lifetimeMs) {
-          p.birthMs = _localMs - 1;
-          p.lifetimeMs = _kLifetimeAvgMs +
-              (_rng.nextDouble() - 0.5) * 2 * _kLifetimeJitterMs;
-          p.angle = _randomAngle();
-          p.poolIdx = _rng.nextInt(_kFeaturePool.length);
-          p.fontSize = 14.0 + (_rng.nextDouble() - 0.5) * 2.6;
-        }
-      }
-
-      // Поднимаем тик — слушатели перерисуют именно свои поддеревья.
-      _frameTick.value = elapsed.inMicroseconds;
-    })..start();
+    _ticker = createTicker(_onTick)..start();
   }
 
   void _onBoost() {
-    _speedTarget = 2.4;
-    _boostUntilMs = DateTime.now().millisecondsSinceEpoch + 1500;
+    _boostUntilEpochMs =
+        DateTime.now().millisecondsSinceEpoch + _kBoostHoldMs;
   }
 
-  /// Случайный угол с лёгким уклоном к горизонтали: чтобы подписи реже
-  /// проходили строго над/под лого, мы смешиваем raw-угол с ближайшей
-  /// горизонталью (0° или 180°) в пропорции 70/30.
+  /// Случайный угол с лёгким уклоном к горизонтали: чтобы подписи
+  /// реже проходили строго над/под заголовком, мы смешиваем raw-угол
+  /// с ближайшей горизонталью (0° или 180°) в пропорции 70/30.
   double _randomAngle() {
     final raw = _rng.nextDouble() * 2 * math.pi;
     final target = math.cos(raw) >= 0 ? 0.0 : math.pi;
     return raw * 0.7 + target * 0.3;
   }
 
+  void _onTick(Duration elapsed) {
+    if (_lastElapsed == Duration.zero) {
+      // На первом тике dt считать не от чего; просто запомним момент.
+      _lastElapsed = elapsed;
+      return;
+    }
+    final dtMs = (elapsed - _lastElapsed).inMicroseconds / 1000.0;
+    _lastElapsed = elapsed;
+    final nowEpoch = DateTime.now().millisecondsSinceEpoch;
+    final boostTarget =
+        nowEpoch < _boostUntilEpochMs ? _kBoostFactor : 1.0;
+    _boost += (boostTarget - _boost) * _kBoostEase;
+    final nextMs = _animTimeMs.value + dtMs * _boost;
+    // «Умершие» частицы (age >= durMs) перерождаем — используем nextMs
+    // как новый bornAtMs, чтобы возраст начался с нуля сразу после
+    // обновления времени.
+    for (final p in _particles) {
+      if (nextMs - p.bornAtMs >= p.durMs) {
+        _respawn(p, nextMs);
+      }
+    }
+    _animTimeMs.value = nextMs;
+  }
+
+  void _respawn(_RadialParticle p, double now) {
+    p.bornAtMs = now;
+    p.durMs = _kParticleDurMinMs + _rng.nextDouble() * _kParticleDurSpanMs;
+    p.angle = _randomAngle();
+    p.peakAlpha =
+        _kParticlePeakMin + _rng.nextDouble() * _kParticlePeakSpan;
+    p.labelIndex = _rng.nextInt(_kLabelPool.length);
+  }
+
   @override
   void dispose() {
     widget.boostTick.removeListener(_onBoost);
     _ticker.dispose();
-    _frameTick.dispose();
+    _animTimeMs.dispose();
     super.dispose();
   }
 
@@ -727,29 +744,31 @@ class _FeatureParticlesBackgroundState
     final pal = context.pal;
     final iconColor = AppColors.accent;
     final textColor = pal.text;
-
     return RepaintBoundary(
       child: LayoutBuilder(
         builder: (context, constraints) {
           final size = Size(constraints.maxWidth, constraints.maxHeight);
-          final cx = size.width / 2;
-          final cy = size.height / 2;
-          final maxR = math.min(size.width, size.height) * 0.62;
+          // exitR — «радиус ухода»: половина диагонали + запас, чтобы
+          // лейблы успели уйти за край экрана прежде, чем их альфа
+          // упрётся в 0.
+          final exitR = math.sqrt(
+                    size.width * size.width + size.height * size.height,
+                  ) /
+                  2 +
+              24;
           return Stack(
-            clipBehavior: Clip.hardEdge,
+            fit: StackFit.expand,
+            clipBehavior: Clip.none,
             children: [
               for (int i = 0; i < _particles.length; i++)
-                _ParticleView(
+                _RadialParticleView(
                   key: ValueKey<int>(i),
                   particle: _particles[i],
-                  centerX: cx,
-                  centerY: cy,
-                  logoR: _kLogoRadius,
-                  maxR: maxR,
+                  bgSize: size,
+                  exitR: exitR,
+                  animTimeMs: _animTimeMs,
                   iconColor: iconColor,
                   textColor: textColor,
-                  frameTick: _frameTick,
-                  getLocalMs: _getLocalMs,
                 ),
             ],
           );
@@ -757,87 +776,76 @@ class _FeatureParticlesBackgroundState
       ),
     );
   }
-
-  double _getLocalMs() => _localMs;
 }
 
-/// Одна частица. ValueListenableBuilder делает rebuild ТОЛЬКО этого
-/// поддерева, RepaintBoundary локализует репейнт в отдельный слой.
-class _ParticleView extends StatelessWidget {
-  final _Particle particle;
-  final double centerX;
-  final double centerY;
-  final double logoR;
-  final double maxR;
+/// Виджет одной радиальной частицы. ValueListenableBuilder ребилдит
+/// ТОЛЬКО Positioned внутри — родительский Stack из
+/// _FeatureParticlesBackground остаётся стабильным.
+///
+/// Частица появляется ровно на радиусе [_kLogoRadius] от центра экрана
+/// (т.е. сразу «на ободке» лого), и за время жизни плавно отлетает до
+/// [exitR]. Внутрь силуэта она никогда не залетает по конструкции.
+class _RadialParticleView extends StatelessWidget {
+  final _RadialParticle particle;
+  final Size bgSize;
+  final double exitR;
+  final ValueListenable<double> animTimeMs;
   final Color iconColor;
   final Color textColor;
-  final ValueListenable<int> frameTick;
-  final double Function() getLocalMs;
-  const _ParticleView({
+  const _RadialParticleView({
     super.key,
     required this.particle,
-    required this.centerX,
-    required this.centerY,
-    required this.logoR,
-    required this.maxR,
+    required this.bgSize,
+    required this.exitR,
+    required this.animTimeMs,
     required this.iconColor,
     required this.textColor,
-    required this.frameTick,
-    required this.getLocalMs,
   });
 
   @override
   Widget build(BuildContext context) {
     return RepaintBoundary(
-      child: ValueListenableBuilder<int>(
-        valueListenable: frameTick,
-        builder: (_, __, ___) {
-          final t = getLocalMs();
-          final age = t - particle.birthMs;
-          final life = age / particle.lifetimeMs;
-          if (life <= 0 || life >= 1) {
-            return const SizedBox.shrink();
-          }
-
-          final cosA = math.cos(particle.angle);
-          final sinA = math.sin(particle.angle);
-          final dist = logoR + _easeOutCubic(life) * (maxR - logoR);
-          final dx = centerX + cosA * dist;
-          final dy = centerY + sinA * dist;
-
-          const peak = 0.55;
-          final alpha = _alphaEnvelope(life, peak).clamp(0.0, 1.0);
+      child: ValueListenableBuilder<double>(
+        valueListenable: animTimeMs,
+        builder: (_, currentMs, __) {
+          final age = currentMs - particle.bornAtMs;
+          if (age <= 0) return const SizedBox.shrink();
+          final t = (age / particle.durMs).clamp(0.0, 1.0);
+          // easeOutCubic: бойкий старт у края лого, мягкое замедление
+          // к краю экрана. Координата старта = _kLogoRadius, финиш = exitR.
+          final tInv = 1.0 - t;
+          final eased = 1.0 - tInv * tInv * tInv;
+          final r = _kLogoRadius + (exitR - _kLogoRadius) * eased;
+          final cx = bgSize.width / 2;
+          final cy = bgSize.height / 2;
+          final x = cx + math.cos(particle.angle) * r;
+          final y = cy + math.sin(particle.angle) * r;
+          final alpha = _alphaByT(t, particle.peakAlpha).clamp(0.0, 1.0);
+          if (alpha < 0.01) return const SizedBox.shrink();
+          final label = _kLabelPool[particle.labelIndex];
           final ic = iconColor.withValues(alpha: alpha);
           final tc = textColor.withValues(alpha: alpha);
-
-          final feat = _kFeaturePool[particle.poolIdx];
-          final iconSize = particle.fontSize * 1.4;
-
-          // Позиционируем по center-якорю частицы. Переводим через
-          // FractionalTranslation(-0.5,-0.5) после позиции — так центр
-          // Row'а оказывается ровно в (dx, dy).
           return Positioned(
-            left: dx,
-            top: dy,
-            child: FractionalTranslation(
-              translation: const Offset(-0.5, -0.5),
-              child: IgnorePointer(
+            left: x,
+            top: y,
+            // FractionalTranslation сдвигает лейбл так, чтобы (x, y)
+            // оказалась его геометрическим центром — без знания реальной
+            // ширины Row'а.
+            child: IgnorePointer(
+              child: FractionalTranslation(
+                translation: const Offset(-0.5, -0.5),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Iconify(
-                      feat.iconName,
-                      size: iconSize,
-                      color: ic,
-                    ),
-                    const SizedBox(width: 6),
+                    Iconify(label.iconName, size: 18, color: ic),
+                    const SizedBox(width: 8),
                     Text(
-                      feat.text,
+                      label.text,
                       maxLines: 1,
                       softWrap: false,
                       style: TextStyle(
                         color: tc,
-                        fontSize: particle.fontSize,
+                        fontSize: 14.5,
                         fontWeight: FontWeight.w500,
                         letterSpacing: 0.1,
                       ),
@@ -851,6 +859,23 @@ class _ParticleView extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Альфа по времени жизни частицы:
+///   t ∈ [0, fadeInUntil]            — линейный fade-in 0..peak
+///   t ∈ [fadeInUntil, fadeOutFrom]  — peak
+///   t ∈ [fadeOutFrom, 1]            — линейный fade-out peak..0
+double _alphaByT(
+  double t,
+  double peak, {
+  double fadeInUntil = 0.10,
+  double fadeOutFrom = 0.82,
+}) {
+  if (t < fadeInUntil) return peak * (t / fadeInUntil);
+  if (t > fadeOutFrom) {
+    return peak * (1 - (t - fadeOutFrom) / (1 - fadeOutFrom));
+  }
+  return peak;
 }
 
 // =====================================================================
