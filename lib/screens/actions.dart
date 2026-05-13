@@ -1152,12 +1152,12 @@ double computeRunProgress(GhRun run,
   }
 }
 
-/// Полоса прогресса активных ранов. Новый M3 expressive вид
-/// (https://m3.material.io/components/progress-indicators/overview):
-/// активный сегмент wavy-волной, трек прямой, между ними gap,
-/// в конце трека — stop-точка. Drop-in замена старой градиентной
-/// полосы с shimmer'ом — выглядит современно и тратит меньше
-/// ресурсов (нет saveLayer от градиента + shimmer'а).
+/// Полоса прогресса активных ранов (сборка GitHub Actions). Новый
+/// M3 linear-индикатор: прямая полоса со скруглёнными концами +
+/// gap между активной частью и треком + stop-точка в конце трека
+/// (https://m3.material.io/components/progress-indicators/overview).
+/// Волнистый вариант оставлен только при ЗАЛИВКЕ файлов в profile —
+/// для сборки юзер явно просил «прямую» (см. M3 spec screenshot).
 class RunProgressBar extends StatelessWidget {
   final double progress;
   const RunProgressBar({super.key, required this.progress});
@@ -1169,6 +1169,7 @@ class RunProgressBar extends StatelessWidget {
       progress: progress,
       activeColor: AppColors.accent,
       trackColor: pal.cont2,
+      wavy: false,
     );
   }
 }
