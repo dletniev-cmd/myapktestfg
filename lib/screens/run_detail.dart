@@ -86,16 +86,16 @@ class _RunDetailScreenState extends State<RunDetailScreen> {
       await AppState.I.api!.rerunRun(AppState.I.activeRepo!.fullName, _run.id);
       HapticFeedback.mediumImpact();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Запущен повторно')),
-      );
-      await Future.delayed(const Duration(seconds: 2));
+      // Никаких SnackBar / модальных плашек — юзер прямо просил «без
+      // белых уведомлений снизу, молча». Подтверждение визуально даёт
+      // сам экран: статус ран'а мгновенно переходит из completed обратно
+      // в in_progress (иконка, цвет, прогресс-бар). Этого достаточно.
+      await Future.delayed(const Duration(milliseconds: 600));
       await _load(silent: true);
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не удалось перезапустить: $e')),
-      );
+    } catch (_) {
+      // Молча. SnackBar убран по просьбе пользователя — если запрос на
+      // rerun упал, экран просто остаётся в текущем состоянии, юзер
+      // увидит это по неизменившемуся статусу и сможет повторить.
     } finally {
       if (mounted) setState(() => _busyAction = false);
     }
@@ -108,17 +108,14 @@ class _RunDetailScreenState extends State<RunDetailScreen> {
       await AppState.I.api!.cancelRun(AppState.I.activeRepo!.fullName, _run.id);
       HapticFeedback.mediumImpact();
       if (!mounted) return;
-      // Раньше тут показывался SnackBar «Отмена отправлена» — юзер
-      // просил убрать это «белое уведомление». Индикация теперь в
-      // самой кнопке: вместо иконки «x» пока запрос летит в
-      // GitHub и ран ещё не перешёл в cancelled — крутится
-      // маленький спиннер (см. _ActionBtn.loading).
+      // Никаких SnackBar — фидбэк через саму кнопку: пока запрос
+      // отмены летит в GitHub и ран ещё не перешёл в cancelled,
+      // крутится маленький спиннер (см. _ActionBtn.loading).
       await _load(silent: true);
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не удалось отменить: $e')),
-      );
+    } catch (_) {
+      // Молча. По просьбе пользователя — никаких плашек снизу при
+      // ошибке отмены; кнопка возвращается в активное состояние и
+      // юзер может повторить.
     } finally {
       if (mounted) setState(() => _busyAction = false);
     }

@@ -143,8 +143,29 @@ class _SplashScreenState extends State<SplashScreen> {
       body: Stack(
         fit: StackFit.expand,
         children: [
-          const Positioned.fill(child: _CodeRainBackground()),
-          const Positioned.fill(child: _FeatureParticlesBackground()),
+          // Фоновые слои (код-дождь + летящие фичи) живут ТОЛЬКО на
+          // онбординге (stage 0). На экране разрешений (stage 1) их быть
+          // не должно — юзер просил. AnimatedSwitcher даёт мягкий
+          // fade-out при переходе, чтобы они не «обрубались» резко.
+          Positioned.fill(
+            child: IgnorePointer(
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 280),
+                switchInCurve: Curves.easeOutCubic,
+                switchOutCurve: Curves.easeInCubic,
+                child: _stage == 0
+                    ? const Stack(
+                        key: ValueKey('bg0'),
+                        fit: StackFit.expand,
+                        children: [
+                          Positioned.fill(child: _CodeRainBackground()),
+                          Positioned.fill(child: _FeatureParticlesBackground()),
+                        ],
+                      )
+                    : const SizedBox.expand(key: ValueKey('bg1')),
+              ),
+            ),
+          ),
           Positioned.fill(
             child: Listener(
               behavior: HitTestBehavior.translucent,
@@ -231,19 +252,18 @@ class _ThemeToggleButton extends StatelessWidget {
         width: 44,
         height: 44,
         child: Center(
+          // Анимация 1-в-1 как у кнопки темы на экране профиля
+          // (см. ProfileScreen): новая иконка въезжает с поворотом
+          // 0.25→0 (90°→0°) + scale 0→1. Старая ушла «обратно» —
+          // AnimatedSwitcher играет тот же transitionBuilder в reverse.
+          // 220мс — длительность из профиля, чтобы переключение между
+          // экранами не выглядело по-разному.
           child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 320),
-            switchInCurve: Curves.easeOutCubic,
-            switchOutCurve: Curves.easeInCubic,
-            transitionBuilder: (child, anim) {
-              final rotate = Tween<double>(begin: 0.5, end: 0.0).animate(
-                CurvedAnimation(parent: anim, curve: Curves.easeOutCubic),
-              );
-              return FadeTransition(
-                opacity: anim,
-                child: RotationTransition(turns: rotate, child: child),
-              );
-            },
+            duration: const Duration(milliseconds: 220),
+            transitionBuilder: (child, anim) => RotationTransition(
+              turns: Tween<double>(begin: 0.25, end: 0.0).animate(anim),
+              child: ScaleTransition(scale: anim, child: child),
+            ),
             child: Iconify(
               iconName,
               key: ValueKey<bool>(isDark),
@@ -578,14 +598,16 @@ class _FeatureParticlesBackground extends StatefulWidget {
 class _FeatureParticlesBackgroundState
     extends State<_FeatureParticlesBackground>
     with SingleTickerProviderStateMixin {
-  /// Максимум одновременно живых частиц. Больше — плотнее «облако» и
-  /// меньше «дыр» по таймингу; меньше — спокойнее. 7 = баланс.
-  static const int _kMaxParticles = 7;
+  /// Максимум одновременно живых частиц. Юзер просил «пореже» — снизили
+  /// с 7 до 4. Стало заметно спокойнее, без визуального шума.
+  static const int _kMaxParticles = 4;
 
-  /// Внутренний радиус «эмиссии» — частицы рождаются на этой окружности
-  /// вокруг центра лого. 110 > половина лого (78) + воздух 30. Это
-  /// гарантия, что НИЧЕГО никогда не появляется на самом логотипе.
-  static const double _kInnerRadius = 110.0;
+  /// Внутренний радиус «эмиссии» — это позиция ЦЕНТРА чипа. Чип имеет
+  /// заметную ширину (иконка ~22 + текст ~80–110), поэтому при r=110
+  /// его левая/правая половина (~50–60px) могла залетать на сам лого
+  /// (радиус 78). Юзер прямо просил «чтобы не заходили на лого».
+  /// Поднимаем эмиссию до 160 — чип всегда стоит снаружи логотипа.
+  static const double _kInnerRadius = 160.0;
 
   /// Геометрический сдвиг центра лого относительно центра Stack'а.
   /// Хиро в Column'е: Spacer(1) — Лого+Текст(~225) — Spacer(1) —
@@ -633,12 +655,11 @@ class _FeatureParticlesBackgroundState
     _angleCursor = _rnd.nextDouble() * 2 * math.pi;
     _ticker = createTicker(_onTick)..start();
     // Pre-spawn — чтобы юзер увидел движение мгновенно при открытии,
-    // равномерно разнесено по фазам.
-    _spawn(initialAgeFrac: 0.05);
-    _spawn(initialAgeFrac: 0.22);
+    // равномерно разнесено по фазам. Раньше 5 штук, теперь 3 — соответствует
+    // снижению _kMaxParticles до 4 (один слот остаётся под живой spawn).
+    _spawn(initialAgeFrac: 0.10);
     _spawn(initialAgeFrac: 0.40);
-    _spawn(initialAgeFrac: 0.58);
-    _spawn(initialAgeFrac: 0.76);
+    _spawn(initialAgeFrac: 0.70);
   }
 
   @override
@@ -661,8 +682,10 @@ class _FeatureParticlesBackgroundState
 
     _scaledMicros += (dtMicros * _speed).round();
 
-    // Спавним новую частицу каждые ~1300–1600мс СЦЕНЫ — равномерно.
-    final spawnGap = 1300 + _rnd.nextInt(300);
+    // Спавним новую частицу каждые ~2400–3000мс СЦЕНЫ — заметно реже,
+    // чем раньше (1300–1600мс). Юзер просил «пореже» — это раза в два
+    // спокойнее, и не создаёт визуального хаоса рядом с лого.
+    final spawnGap = 2400 + _rnd.nextInt(600);
     final due = (_scaledMicros - _lastSpawnMicros) >= spawnGap * 1000;
     if (due && _particles.length < _kMaxParticles) {
       _spawn();
@@ -689,7 +712,10 @@ class _FeatureParticlesBackgroundState
     // Равномерное угловое распределение по золотому углу + лёгкий джиттер.
     _angleCursor = (_angleCursor + _kGolden) % (2 * math.pi);
     final angle = _angleCursor + (_rnd.nextDouble() - 0.5) * 0.25;
-    final endRadius = 240.0 + _rnd.nextDouble() * 50.0;     // 240–290
+    // Сдвигаем endRadius вверх вместе с innerRadius (160), чтобы
+    // частица проходила тот же путь по длине, просто стартует дальше
+    // от лого. Раньше было 240–290.
+    final endRadius = 290.0 + _rnd.nextDouble() * 50.0;     // 290–340
     final peakAlpha = 0.55 + _rnd.nextDouble() * 0.25;      // 0.55–0.80
     final fontSize = 14.0 + _rnd.nextDouble() * 1.5;        // 14–15.5
     final startMicros =
@@ -1001,7 +1027,6 @@ class _CodeRainBackgroundState extends State<_CodeRainBackground>
 
   @override
   Widget build(BuildContext context) {
-    final pal = context.pal;
     // Полупрозрачный акцент — заметно, но не отвлекает от лого.
     // Дополнительно мы оставляем "дыру" в центре через мягкую радиальную маску.
     final color = AppColors.accent.withValues(alpha: 0.42);
