@@ -253,12 +253,6 @@ class _SplashScreenState extends State<SplashScreen>
                       ),
                     ),
                     if (_stage == 0)
-                      const Positioned(
-                        top: 8,
-                        left: 12,
-                        child: _SplashVariantPicker(),
-                      ),
-                    if (_stage == 0)
                       Positioned(
                         top: 8,
                         right: 12,
@@ -399,27 +393,12 @@ const List<_GhostFeature> _kGhostFeatures = [
 /// это и даёт «плавное ускорение при удержании».
 final ValueNotifier<double> _kSplashSpeedTarget = ValueNotifier<double>(1.0);
 
-/// Прототип-выбор варианта анимации частиц на splash.
-/// 0 — «Long fade»: текущий полёт к краям, но альфа-кривая
-/// «дольше и мягче» (fade-in 35%, плато 35%, fade-out 30%
-/// по easeInOutCubic).
-/// 1 — «Calm slow drift»: меньше частиц, длиннее жизнь,
-/// мягче радиальная скорость.
-/// 2 — «In-place pulse»: появляются на месте, плавно проявляются
-/// и гаснут без движения.
-final ValueNotifier<int> _kSplashVariant = ValueNotifier<int>(0);
-
-const List<String> _kSplashVariantNames = [
-  'Плавный fade',
-  'Медленный дрейф',
-  'На месте (pulse)',
-];
-
-/// Трапеция альфы: rise — доля fade-in (e.g. 0.35), fall — доля
-/// fade-out (e.g. 0.30). Плато = 1 - rise - fall. Возвращает [0, 1].
+/// Колоколообразная кривая альфы для дрейфующих частиц: rise — доля
+/// fade-in (e.g. 0.40), fall — доля fade-out. Плато между ними.
 /// Оба хвоста сглажены через easeInOutCubic, чтобы не было видимой
-/// «резкой» границы плато.
-double _trapezoid(double t, double rise, double fall) {
+/// линейной «резкой» границы — это и была причина жалоб юзера
+/// «иконки фейдятся резко».
+double _bell(double t, double rise, double fall) {
   if (t <= 0.0) return 0.0;
   if (t >= 1.0) return 0.0;
   if (t < rise) {
@@ -434,113 +413,10 @@ double _trapezoid(double t, double rise, double fall) {
   return 1.0;
 }
 
-/// «Колокол»: rise/fall — обе доли подъёма и спуска, плато между ними.
-/// При rise=0.45, fall=0.45 — это почти симметричная горка с лёгким
-/// плато ~10% в середине. Используется для pulse-варианта.
-double _bell(double t, double rise, double fall) =>
-    _trapezoid(t, rise, fall);
-
 double _easeInOutCubic(double x) {
   if (x < 0.5) return 4 * x * x * x;
   final v = -2 * x + 2;
   return 1 - v * v * v / 2;
-}
-
-/// Прототип-выбор варианта анимации частиц. Маленькая плашка с
-/// тремя кнопками «1 / 2 / 3» в верхнем-левом углу splash'а.
-/// Под нею — имя текущего варианта. Тапы переключают
-/// `_kSplashVariant` — _FeatureParticlesBackgroundState слушает
-/// этот ValueNotifier и пересоздаёт частицы.
-class _SplashVariantPicker extends StatelessWidget {
-  const _SplashVariantPicker();
-
-  @override
-  Widget build(BuildContext context) {
-    final pal = context.pal;
-    return ValueListenableBuilder<int>(
-      valueListenable: _kSplashVariant,
-      builder: (_, current, __) {
-        return Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-          decoration: BoxDecoration(
-            color: pal.cont.withValues(alpha: 0.86),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: pal.cont2, width: 1),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  for (int i = 0; i < 3; i++) ...[
-                    if (i != 0) const SizedBox(width: 4),
-                    _VariantBtn(
-                      index: i,
-                      label: '${i + 1}',
-                      active: current == i,
-                      pal: pal,
-                    ),
-                  ],
-                ],
-              ),
-              const SizedBox(height: 4),
-              Text(
-                _kSplashVariantNames[current],
-                style: TextStyle(
-                  color: pal.sub,
-                  fontSize: 10,
-                  fontWeight: FontWeight.w500,
-                  letterSpacing: 0.2,
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-}
-
-class _VariantBtn extends StatelessWidget {
-  final int index;
-  final String label;
-  final bool active;
-  final AppPalette pal;
-  const _VariantBtn({
-    required this.index,
-    required this.label,
-    required this.active,
-    required this.pal,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: () => _kSplashVariant.value = index,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 220),
-        curve: Curves.easeOutCubic,
-        width: 28,
-        height: 28,
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: active ? AppColors.accent : pal.cont2,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: 13,
-            fontWeight: FontWeight.w700,
-            color: active ? Colors.white : pal.text,
-          ),
-        ),
-      ),
-    );
-  }
 }
 
 class _OnboardingStage extends StatefulWidget {
@@ -796,9 +672,10 @@ class _FeatureParticlesBackground extends StatefulWidget {
 class _FeatureParticlesBackgroundState
     extends State<_FeatureParticlesBackground>
     with SingleTickerProviderStateMixin {
-  /// Максимум одновременно живых частиц. Базовый лимит 4 (варианты A и C);
-  /// вариант B (Calm slow drift) использует 3 (видно в _spawn).
-  int get _kMaxParticles => _kSplashVariant.value == 1 ? 3 : 4;
+  /// Максимум одновременно живых частиц. «Медленный дрейф» (выбран
+  /// юзером в прототипе v108) самый спокойный из трёх — 3 одновременно,
+  /// долго живут, медленно осиживают.
+  static const int _kMaxParticles = 3;
 
   /// Внутренний радиус «эмиссии» — это позиция ЦЕНТРА чипа. Чип имеет
   /// заметную ширину (иконка ~22 + текст ~80–110), поэтому при r=110
@@ -852,23 +729,10 @@ class _FeatureParticlesBackgroundState
     super.initState();
     _angleCursor = _rnd.nextDouble() * 2 * math.pi;
     _ticker = createTicker(_onTick)..start();
-    // При смене варианта очищаем живых частиц — иначе они будут
-    // доживать свою старую траекторию поверх новых, и прототип
-    // выглядит грязно.
-    _kSplashVariant.addListener(_onVariantChanged);
-  }
-
-  void _onVariantChanged() {
-    if (!mounted) return;
-    setState(() {
-      _particles.clear();
-      _lastSpawnMicros = _scaledMicros;
-    });
   }
 
   @override
   void dispose() {
-    _kSplashVariant.removeListener(_onVariantChanged);
     _ticker.dispose();
     _frameTick.dispose();
     super.dispose();
@@ -886,17 +750,11 @@ class _FeatureParticlesBackgroundState
 
     _scaledMicros += (dtMicros * _speed).round();
 
-    // Спавн-пауза зависит от варианта: «Calm slow drift» (1) живёт
-    // дольше, значит надо спавнить реже — иначе лимит _kMaxParticles
-    // быстро забьётся. «In-place pulse» (2) — в среднем тоже немного
-    // медленнее, чтобы не было «высыпания» сразу нескольких чипов.
-    final variant = _kSplashVariant.value;
-    final spawnGapBase = variant == 1
-        ? 4200
-        : variant == 2
-            ? 3000
-            : 2400;
-    final spawnGap = spawnGapBase + _rnd.nextInt(600);
+    // Спавн-пауза 4200–4800мс СЦЕНЫ. При жизни частицы 11–13с и
+    // лимите в 3 штуки это попадает точно в ритм «Медленного
+    // дрейфа» из прототипа v108: в среднем 2.5–3 частицы на экране,
+    // без «высыпания» нескольких чипов подряд.
+    final spawnGap = 4200 + _rnd.nextInt(600);
     final due = (_scaledMicros - _lastSpawnMicros) >= spawnGap * 1000;
     if (due && _particles.length < _kMaxParticles) {
       _spawn();
@@ -919,28 +777,15 @@ class _FeatureParticlesBackgroundState
   void _spawn({double initialAgeFrac = 0.0}) {
     final feature = _kGhostFeatures[_featureCursor % _kGhostFeatures.length];
     _featureCursor++;
-    final variant = _kSplashVariant.value;
-    // Длительность жизни частицы по варианту:
-    //   A (плавный fade)        — 8–10с (как раньше)
-    //   B (медленный дрейф)     — 11–13с (дольше живёт, медленнее идёт)
-    //   C (in-place pulse)         — 5–6.5с (короче, потому что
-    //                                  не движется, частота выше)
-    final int durationMs;
-    if (variant == 1) {
-      durationMs = 11000 + _rnd.nextInt(2000);
-    } else if (variant == 2) {
-      durationMs = 5000 + _rnd.nextInt(1500);
-    } else {
-      durationMs = 8000 + _rnd.nextInt(2000);
-    }
+
+    // Медленный дрейф: жизнь 11–13 секунд. Долго живут и медленно
+    // осиживают — режим, который юзер выбрал в прототипе v108.
+    final durationMs = 11000 + _rnd.nextInt(2000);
 
     // Равномерное угловое распределение по золотому углу + лёгкий джиттер.
     _angleCursor = (_angleCursor + _kGolden) % (2 * math.pi);
     final angle = _angleCursor + (_rnd.nextDouble() - 0.5) * 0.25;
 
-    // endRadius используется вариантами A/B (частица летит
-    // от innerRadius к endRadius). В C (pulse) не используется —
-    // частица висит на (innerRadius + 30) без движения.
     final endRadius = 290.0 + _rnd.nextDouble() * 50.0;     // 290–340
     final peakAlpha = 0.55 + _rnd.nextDouble() * 0.25;      // 0.55–0.80
     final fontSize = 14.0 + _rnd.nextDouble() * 1.5;        // 14–15.5
@@ -955,7 +800,6 @@ class _FeatureParticlesBackgroundState
       peakAlpha: peakAlpha,
       fontSize: fontSize,
       startedAtMicros: startMicros,
-      variant: variant,
     ));
     if (mounted) setState(() {});
   }
@@ -997,11 +841,6 @@ class _Particle {
   final double peakAlpha;
   final double fontSize;
   final int startedAtMicros;
-  /// Снепшот варианта на момент спавна. Частица доживает свою
-  /// жизнь со «своим» вариантом. Но мы очищаем всех живых при
-  /// смене варианта в _onVariantChanged, чтобы прототип
-  /// выглядел чисто при переключении.
-  final int variant;
   const _Particle({
     required this.id,
     required this.feature,
@@ -1011,7 +850,6 @@ class _Particle {
     required this.peakAlpha,
     required this.fontSize,
     required this.startedAtMicros,
-    required this.variant,
   });
   bool deadAt(int nowMicros) =>
       (nowMicros - startedAtMicros) >= durationMs * 1000;
@@ -1072,57 +910,25 @@ class _ParticleView extends StatelessWidget {
               (particle.durationMs * 1000.0);
           if (t <= 0.0 || t >= 1.0) return const SizedBox.shrink();
 
-          // Эффективные параметры движения/альфы собираем зависимо от
-          // particle.variant.
-          final double r;
-          final double scale;
-          final double alpha;
-          switch (particle.variant) {
-            case 1:
-              // === ВАРИАНТ B — Calm slow drift ===
-              // Радиус: летит очень плавно по easeOutCubic — замедляется
-              // к концу жизни. Конечный радиус ближе (путь короче),
-              // частица не «вылетает» за край экрана, а растворяется.
-              final tEase = 1.0 - math.pow(1.0 - t, 3).toDouble();
-              final endR = innerRadius +
-                  (particle.endRadius - innerRadius) * 0.65;
-              r = innerRadius + (endR - innerRadius) * tEase;
-              scale = 0.96 + 0.06 * tEase;
-              // Альфа: easeInOut по всему диапазону — очень мягкое
-              // появление и исчезновение.
-              alpha = particle.peakAlpha * _bell(t, 0.40, 0.40);
-              break;
-            case 2:
-              // === ВАРИАНТ C — In-place pulse ===
-              // Радиус практически не меняется: частица висит на
-              // innerRadius + 25 без ощутимого движения.
-              r = innerRadius + 25.0;
-              // Маленький пульс-scale: 0.92 → 1.04 → 0.96 по колоколу.
-              scale = 0.92 + 0.12 * _bell(t, 0.45, 0.45);
-              // Альфа: плавный колокол 30%/40%/30%.
-              alpha = particle.peakAlpha * _bell(t, 0.30, 0.30);
-              break;
-            default:
-              // === ВАРИАНТ A — Long fade (дефолт) ===
-              // Движение как раньше, линейно по радиусу. Но альфа-
-              // кривая «дольше и мягче»: fade-in 35%, плато 35%,
-              // fade-out 30% — и оба хвоста по easeInOutCubic, чтобы
-              // не было видимого «резкого» момента в конце.
-              r = innerRadius + (particle.endRadius - innerRadius) * t;
-              scale = 0.96 + 0.08 * t;
-              alpha = particle.peakAlpha * _trapezoid(t, 0.35, 0.35);
-              break;
-          }
+          // === Медленный дрейф (выбран юзером в прототипе v108) ===
+          //
+          // Радиус: летит очень плавно по easeOutCubic — замедляется
+          // к концу жизни. Конечный радиус сжат до 65% от полного
+          // (~85px пути вместо ~150), частица НЕ долетает до края
+          // экрана и плавно растворяется задолго до него — это
+          // снимает претензию юзера о «резком» затухании у края.
+          final tEase = 1.0 - math.pow(1.0 - t, 3).toDouble();
+          final endR =
+              innerRadius + (particle.endRadius - innerRadius) * 0.65;
+          final r = innerRadius + (endR - innerRadius) * tEase;
+          final scale = 0.96 + 0.06 * tEase;
+          // Альфа: колокол 40/20/40 по easeInOutCubic — никаких
+          // линейных переходов, оба хвоста сглажены.
+          final alpha = particle.peakAlpha * _bell(t, 0.40, 0.40);
+          if (alpha <= 0.0) return const SizedBox.shrink();
 
           final dx = math.cos(particle.angle) * r;
           final dy = math.sin(particle.angle) * r;
-          if (alpha <= 0.0) return const SizedBox.shrink();
-
-          // Opacity всегда обёртывает в этом прототипе — кривые
-          // сейчас easeInOutCubic/bell, alpha редко ровно peakAlpha
-          // на большом интервале, и трюк «скипа saveLayer» из v106
-          // бы был сработал очень редко. Для 3–4 частиц разница
-          // незаметна.
           return Transform.translate(
             offset: Offset(dx, dy + emitDy),
             child: Opacity(
