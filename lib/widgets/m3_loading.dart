@@ -175,19 +175,26 @@ class _M3LinearPainter extends CustomPainter {
     // сегментом и треком. 4dp подходит почти для всех высот.
     const double gap = 4.0;
 
-    // Stop indicator — круглая точка в конце трека. Её радиус
-    // равен половине толщины полосы, так что точка визуально
-    // продолжает полосу того же диаметра.
+    // Stop indicator (круглая точка) рисуется ТОЛЬКО для прямой
+    // полосы (`wavy=false`). У wavy-полосы концы волны со
+    // `StrokeCap.round` сами по себе и есть «индикатор», а
+    // отдельная точка на средней линии визуально «отрывается»
+    // от синусоидальной траектории — это и был баг про
+    // «какую-то точку» в карточке заливки.
     final double dotR = thickness / 2;
 
-    // Активный участок занимает [0, activeEnd].
-    final double activeEnd = (p * size.width).clamp(0.0, size.width);
-    // Трек начинается после gap'а и доходит до точки.
+    // Активный участок: ограничиваем `[thickness/2, w-thickness/2]`,
+    // чтобы rounded-cap-ы волны/прямой не выходили за рамку.
+    final double maxRight = size.width - thickness / 2;
+    final double activeEnd = (p * size.width).clamp(thickness / 2, maxRight);
+    // Трек начинается после gap'а и доходит до края (минус
+    // место для точки если она рисуется).
     final double trackStart = (activeEnd + gap).clamp(0.0, size.width);
-    final double trackEnd = (size.width - dotR * 2).clamp(0.0, size.width);
+    final double trackEnd = wavy
+        ? maxRight
+        : (size.width - dotR * 2).clamp(0.0, size.width);
 
-    // --- Рисуем трек (неактивная часть). Прямой штрих с
-    // закруглёнными концами.
+    // --- Трек (неактивная часть).
     if (trackEnd > trackStart) {
       _trackPaint
         ..color = trackColor
@@ -199,20 +206,20 @@ class _M3LinearPainter extends CustomPainter {
       );
     }
 
-    // --- Stop indicator: круг в самом конце. При полном
-    // заполнении (progress=1.0) M3 spec предписывает рисовать
-    // точку цветом активной части — иначе на финише появляется
-    // чужеродная точка цвета трека.
-    _dotPaint.color = p >= 0.999 ? activeColor : trackColor;
-    canvas.drawCircle(Offset(size.width - dotR, cy), dotR, _dotPaint);
+    // --- Stop indicator (только для прямой). По M3 spec
+    // на финише точка перекрашивается в цвет активной части.
+    if (!wavy) {
+      _dotPaint.color = p >= 0.999 ? activeColor : trackColor;
+      canvas.drawCircle(Offset(size.width - dotR, cy), dotR, _dotPaint);
+    }
 
     // --- Активный сегмент.
-    if (activeEnd <= 0.5) return;
+    if (activeEnd <= thickness / 2 + 0.5) return;
     _activePaint
       ..color = activeColor
       ..strokeWidth = thickness;
 
-    if (!wavy || activeEnd < thickness * 2) {
+    if (!wavy || activeEnd - thickness / 2 < thickness * 2) {
       // На очень коротких прогрессах wavy визуально превращается
       // в зигзаг и выглядит хуже прямой линии — рисуем прямую.
       canvas.drawLine(
@@ -227,22 +234,34 @@ class _M3LinearPainter extends CustomPainter {
     // полосой, длина волны ~ 4× толщина. Фаза двигается через
     // wavePhase, что создаёт ощущение «бегущей волны» —
     // классическая фича M3 Expressive.
-    final double amplitude = (thickness * 0.55);
+    final double baseAmp = thickness * 0.55;
     final double wavelength = thickness * 4.5;
     final double k = 2 * math.pi / wavelength;
     // Сдвиг фазы за один цикл — на одну длину волны вперёд.
     final double phase = -wavePhase * 2 * math.pi;
+    // Taper zone: амплитуда плавно вырастает с 0 до baseAmp на
+    // первом отрезке и так же спадает к концу — волна аккуратно
+    // «уседает» в центральную линию вместо обрыва на пике.
+    final double start = thickness / 2;
+    final double taper = thickness * 1.5;
 
     final path = Path();
-    // Шаг 1.0 px достаточно мелкий, но не убивает производительность.
     const double step = 1.0;
-    final double start = thickness / 2;
     double x = start;
-    path.moveTo(x, cy + amplitude * math.sin(k * x + phase));
+    double ampAt(double xv) {
+      final fromStart = xv - start;
+      final fromEnd = activeEnd - xv;
+      final tStart = (fromStart / taper).clamp(0.0, 1.0);
+      final tEnd = (fromEnd / taper).clamp(0.0, 1.0);
+      final attenuation = math.min(tStart, tEnd);
+      return baseAmp * attenuation;
+    }
+
+    path.moveTo(x, cy + ampAt(x) * math.sin(k * x + phase));
     while (x < activeEnd) {
       x += step;
       if (x > activeEnd) x = activeEnd;
-      final y = cy + amplitude * math.sin(k * x + phase);
+      final y = cy + ampAt(x) * math.sin(k * x + phase);
       path.lineTo(x, y);
     }
     canvas.drawPath(path, _activePaint);
