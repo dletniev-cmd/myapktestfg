@@ -1,8 +1,4 @@
-import 'dart:math' as math;
-
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -19,14 +15,9 @@ import 'shell.dart';
 /// Состоит из двух стадий, между которыми переключаемся внутри одного
 /// Scaffold'а (через AnimatedSwitcher):
 ///
-///   1) [_OnboardingStage] — статичный хиро: лого GitHub, заголовок и
-///      подпись «всё, что нужно — на одном экране», sticky-кнопка
-///      «Вставить ключ» внизу. На фоне — радиальные «призрачные»
-///      подписи функций, летящие от центра лого к краям во все
-///      360°; они плавно появляются за периметром хироблока
-///      (защитная рамка вокруг лого + заголовка + подзаголовка)
-///      и плавно гаснут к краям. При удержании пальца на экране
-///      анимация плавно ускоряется (см. [_FeatureParticlesBackground]).
+///   1) [_OnboardingStage] — свайп-онбординг из пяти страниц (логотип
+///      GitHub + четыре описания фич) с точками-индикаторами внизу и
+///      sticky-кнопкой «Вставить ключ».
 ///   2) [_PermissionsStage] — показывается после того, как токен проверен;
 ///      содержит тумблеры разрешений (уведомления, доступ к галерее)
 ///      и кнопку «Начать».
@@ -268,23 +259,70 @@ class _FadeRoute<T> extends PageRouteBuilder<T> {
 }
 
 // =====================================================================
-// Стадия 1. Онбординг (статичный хиро + летающие описания функций)
+// Стадия 1. Онбординг (свайп-страницы + sticky-кнопка)
 // =====================================================================
 
-/// Один лейбл-описание функции, который может появиться как радиальная
-/// частица. Пул хардкожен в [_kLabelPool] ниже — рантайм случайно берёт
-/// из него лейблы для очередной «частицы» и подписывает её Iconify-иконкой.
-class _LabelFeature {
+/// Описание одной онбординг-страницы. Иконка — всегда Iconify SVG из
+/// набора Solar/MDI (assets/icons/*.svg). Lottie-стикеры удалены —
+/// они давали лаги при свайпе PageView (декод JSON, paint heavy paths)
+/// и визуально были «дёрганые».
+///
+/// `iconSize` — это РАЗМЕР САМОЙ ИКОНКИ внутри фиксированного бокса
+/// `_kIconBoxSize`. Внешний бокс одинаковый для всех страниц, чтобы
+/// при смене страницы текст НЕ прыгал по вертикали (раньше лого
+/// был 138, остальные 130 — при свайпе на стр.2 текст подскакивал на
+/// 8px вверх, когда иконочная зона ужималась под маленькую иконку).
+class _OnbPage {
   final String iconName;
-  final String text;
-  const _LabelFeature(this.iconName, this.text);
+  final double iconSize;
+  final String title;
+  final String sub;
+  const _OnbPage({
+    required this.iconName,
+    required this.title,
+    required this.sub,
+    this.iconSize = 130,
+  });
 }
 
-/// Стейтфул-обёртка над сценой онбординга. Хранит два GlobalKey'я
-/// (по ним фон замеряет координаты хиро относительно корневого Stack'а)
-/// и ValueNotifier `_boostActive` — «палец нажат». Фон подписан на
-/// этот ValueNotifier и плавно интерполирует свой множитель скорости
-/// к 1.6 (палец держится) или к 1.0 (отпущен).
+/// Внешний бокс иконочной зоны. Должен быть >= max(iconSize) всех
+/// страниц, иначе бокс будет схлопываться под текущую иконку и
+/// контент ниже будет прыгать.
+const double _kIconBoxSize = 160;
+
+const List<_OnbPage> _onbPages = [
+  _OnbPage(
+    iconName: 'mdi:github',
+    iconSize: 156, // лого крупнее остальных (фактический размер ~140 из-за внутренних полей SVG)
+    title: 'GitHub Pusher',
+    sub: 'Свайпни, чтобы узнать что умеет приложение.',
+  ),
+  _OnbPage(
+    iconName: 'solar:cloud-upload-bold',
+    title: 'Заливай файлы',
+    sub:
+        'Прямо с телефона отправляй файлы в любой свой репозиторий — без коммитов вручную.',
+  ),
+  _OnbPage(
+    iconName: 'solar:rocket-bold',
+    title: 'Запускай Actions',
+    sub:
+        'Следи за статусом сборок и перезапускай их одним тапом прямо из приложения.',
+  ),
+  _OnbPage(
+    iconName: 'solar:download-square-bold',
+    title: 'Скачивай APK',
+    sub:
+        'Артефакты сборки доступны сразу — устанавливай новый билд без перехода в браузер.',
+  ),
+  _OnbPage(
+    iconName: 'solar:lock-keyhole-bold',
+    title: 'Только на устройстве',
+    sub:
+        'Токен хранится локально и не отправляется на сторонние серверы. Полный контроль остаётся у вас.',
+  ),
+];
+
 class _OnboardingStage extends StatefulWidget {
   final bool loading;
   final String error;
@@ -295,149 +333,175 @@ class _OnboardingStage extends StatefulWidget {
     required this.error,
     required this.onPaste,
   });
-
   @override
   State<_OnboardingStage> createState() => _OnboardingStageState();
 }
 
 class _OnboardingStageState extends State<_OnboardingStage> {
-  final GlobalKey _heroKey = GlobalKey();
-  final GlobalKey _stackKey = GlobalKey();
-  final ValueNotifier<bool> _boostActive = ValueNotifier<bool>(false);
+  late final PageController _pc = PageController();
+
+  // Это ключевое для Telegram-style поведения: settledIndex обновляется
+  // ТОЛЬКО в `PageView.onPageChanged`, т.е. ПОСЛЕ того как юзер отпустил
+  // палец и PageView докатился до целой страницы. Иконочный
+  // AnimatedSwitcher биндится именно на этот индекс, поэтому пока
+  // тянешь пальцем — иконка не меняется, только после отпускания.
+  int _settledIndex = 0;
+
+  void _onPageChanged(int i) {
+    if (i == _settledIndex) return;
+    setState(() => _settledIndex = i);
+  }
 
   @override
   void dispose() {
-    _boostActive.dispose();
+    _pc.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final pal = context.pal;
-    // Listener верхнего уровня с HitTestBehavior.translucent — принимает
-    // pointer down/up для «буста» анимации, но НЕ блокирует доставку
-    // событий лежащим ниже виджетам (кнопка «Вставить ключ» работает
-    // как обычно).
-    return Listener(
-      behavior: HitTestBehavior.translucent,
-      onPointerDown: (_) => _boostActive.value = true,
-      onPointerUp: (_) => _boostActive.value = false,
-      onPointerCancel: (_) => _boostActive.value = false,
-      // Хиро + фон лежат в Stack. Фон ниже, на нём анимация — она
-      // изолирована собственным RepaintBoundary внутри _FeatureParticlesBackground.
-      // Передний план (лого/текст/кнопка) тоже обёрнут в RepaintBoundary,
-      // чтобы каждый кадр фоновой анимации НЕ заставлял Flutter
-      // перерисовывать дерево хиро (это ключевое для 60fps).
-      child: Stack(
-        key: _stackKey,
-        fit: StackFit.expand,
-        children: [
-          Positioned.fill(
-            child: _FeatureParticlesBackground(
-              heroKey: _heroKey,
-              stackKey: _stackKey,
-              boostActive: _boostActive,
-            ),
-          ),
-          Positioned.fill(
-            child: RepaintBoundary(
-              child: _OnboardingHero(
-                heroKey: _heroKey,
-                loading: widget.loading,
-                error: widget.error,
-                onPaste: widget.onPaste,
-                pal: pal,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// Статичный хиро: лого GitHub + заголовок + подпись, sticky-кнопка
-/// «Вставить ключ» внизу. Никаких PageView/каруселей — всё на месте.
-class _OnboardingHero extends StatelessWidget {
-  final GlobalKey heroKey;
-  final bool loading;
-  final String error;
-  final Future<void> Function() onPaste;
-  final AppPalette pal;
-  const _OnboardingHero({
-    required this.heroKey,
-    required this.loading,
-    required this.onPaste,
-    required this.error,
-    required this.pal,
-  });
-
-  @override
-  Widget build(BuildContext context) {
+    // Layout:
+    //   • flex 2 сверху, flex 1 снизу — верхний воздух в 2 раза больше
+    //     нижнего, так группа «иконка + текст» оказывается ровно по
+    //     середине экрана (раньше она была заметно выше центра, потому
+    //     что нижний фикс-блок съедал ~155px и спейсеры flex 1/1 делили
+    //     остаток в нижней половине экрана пополам).
+    //   • Нижний блок прижат к bottom (padding 4 снизу), gap'ы между
+    //     кнопкой/линком/подсказкой уменьшены — это «опускает» кнопку
+    //     ниже по экрану, как и просил пользователь.
     return Column(
       children: [
-        // Верхний воздух больше нижнего → группа «лого+текст»
-        // визуально ровно по центру свободной области (чуть выше середины).
+        // ============== ВЕРХНИЙ ВОЗДУХ ==============
         const Spacer(flex: 2),
-        // Хиро-блок: лого + заголовок + подзаголовок, обёрнут в одну
-        // Column с GlobalKey — её RenderBox замеряется фоном и
-        // используется как защитная рамка: радиальные частицы внутри
-        // не рисуются, fade-in считается от ближайшей грани этого
-        // прямоугольника.
-        Column(
-          key: heroKey,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Лого GitHub. На светлой теме — акцентный фиолетовый,
-            // на тёмной — белый (как и было).
-            Iconify(
-              'mdi:github',
-              size: 156,
-              color: pal.isDark ? pal.text : AppColors.accent,
-            ),
-            const SizedBox(height: 20),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    'GitHub Pusher',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: -.3,
-                      color: pal.text,
-                    ),
+        // ============== ИКОНОЧНАЯ ЗОНА (фиксирована, НЕ свайпается) ==============
+        // Иконка биндится на `_settledIndex`, который обновляется ТОЛЬКО
+        // в `PageView.onPageChanged` (т.е. после того как палец отпущен
+        // и PageView докатился до целой страницы). Пока юзер тянет
+        // пальцем — иконка стоит на месте. Когда страница защёлкивается —
+        // AnimatedSwitcher плавно меняет иконку на новую.
+        //
+        // КРИТИЧНО: внешний SizedBox с фиксированным `_kIconBoxSize` —
+        // защита от «прыжка» текста при свайпе. У иконок разный
+        // визуальный размер (156 у лого, 130 у остальных), и если
+        // не закрепить outer-бокс, AnimatedSwitcher через Stack
+        // ужимался под текущую иконку, а текст ниже подскакивал на
+        // 8-26px. С фикс-боксом outer-размер всегда 160, иконки внутри
+        // центрируются — ничего не прыгает.
+        SizedBox(
+          width: _kIconBoxSize,
+          height: _kIconBoxSize,
+          child: RepaintBoundary(
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 420),
+              switchInCurve: Curves.easeOutCubic,
+              switchOutCurve: Curves.easeInCubic,
+              // Анимация смены иконки — Rotate Spin: иконка поворачивается
+              // на 180° с одновременным уменьшением до 0.6 и fade. Старая
+              // «улетает» с поворотом и уменьшением, новая «прилетает»
+              // с противоположного угла, восстанавливая нормальный
+              // размер и ориентацию. Заметно, но не утомляет — похоже
+              // на смену темы (юзер выбрал вариант №4 из HTML-превью).
+              //
+              // Анимация включается ТОЛЬКО при смене _settledIndex
+              // (т.е. ПОСЛЕ отпускания пальца и защёлкивания страницы) —
+              // пока юзер тянет, ничего не моргает.
+              transitionBuilder: (child, anim) {
+                final curved = CurvedAnimation(
+                  parent: anim,
+                  curve: Curves.easeOutCubic,
+                  reverseCurve: Curves.easeInCubic,
+                );
+                final rotate = Tween<double>(
+                  begin: 0.5,
+                  end: 0.0,
+                ).animate(curved);
+                final scale = Tween<double>(
+                  begin: 0.6,
+                  end: 1.0,
+                ).animate(curved);
+                return FadeTransition(
+                  opacity: anim,
+                  child: RotationTransition(
+                    turns: rotate,
+                    child: ScaleTransition(scale: scale, child: child),
                   ),
-                  const SizedBox(height: 10),
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 320),
-                    child: Text(
-                      'всё, что нужно — на одном экране',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 14.5,
-                        color: pal.sub,
-                        height: 1.5,
-                      ),
-                    ),
-                  ),
-                ],
+                );
+              },
+              layoutBuilder: (currentChild, previousChildren) {
+                // Кастомный layout — все children выровнены по центру
+                // фикс-бокса, ничего не растягивает родителя.
+                return Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    ...previousChildren,
+                    if (currentChild != null) currentChild,
+                  ],
+                );
+              },
+              child: _IconForPage(
+                key: ValueKey<int>(_settledIndex),
+                page: _onbPages[_settledIndex],
+                isDark: pal.isDark,
+                textColor: pal.text,
               ),
             ),
-          ],
+          ),
         ),
+        // Плотный gap между иконкой и заголовком (20px) — иконка
+        // прижата к тексту, единая группа.
+        const SizedBox(height: 20),
+        // ============== ТЕКСТ (свайпается вместе с пальцем, edge-to-edge) ==============
+        // PageView во всю ширину экрана — без бокового паддинга, чтобы
+        // соседние страницы при свайпе уходили за край экрана.
+        // Горизонтальный паддинг 24 у текста — внутри страницы.
+        SizedBox(
+          height: 130,
+          child: PageView.builder(
+            controller: _pc,
+            itemCount: _onbPages.length,
+            // PageScrollPhysics — нативная физика для PageView с
+            // правильным snap-поведением. Раньше тут была
+            // ClampingScrollPhysics — она тормозит overscroll, но
+            // также делает свайп «вязким» на границах. PageScroll
+            // даёт плавный snap-feel как в нативных Telegram/Stories.
+            physics: const PageScrollPhysics(parent: BouncingScrollPhysics()),
+            // Прекэшируем соседние страницы — pageView обычно держит
+            // одну страницу и одну соседнюю; явно поднимаем cacheExtent,
+            // чтобы при первом свайпе следующая страница не строилась
+            // в первом кадре скролла (это давало 1-кадровый jank).
+            allowImplicitScrolling: true,
+            // onPageChanged срабатывает ТОЛЬКО после того как PageView
+            // докатился до целой страницы (обычно после отпускания
+            // пальца). Тут мы переключаем _settledIndex → иконка
+            // плавно меняется. Никаких setState на каждый кадр скролла.
+            onPageChanged: _onPageChanged,
+            itemBuilder: (_, i) {
+              return RepaintBoundary(
+                child: _OnbTextPage(page: _onbPages[i]),
+              );
+            },
+          ),
+        ),
+        // Нижний воздух — в 2 раза меньше верхнего, чтобы группа
+        // «иконка+текст» визуально была ровно по центру экрана.
         const Spacer(flex: 1),
-        // Нижний блок: кнопка + ссылка + ошибка/хинт.
+        // ============== ТОЧКИ + КНОПКА + ХВОСТ ==============
         Padding(
           padding: const EdgeInsets.fromLTRB(24, 0, 24, 4),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
+              // Точки-индикаторы. Слушают PageController через
+              // AnimatedBuilder — пересобираются ТОЛЬКО они, а не вся
+              // онбординг-стадия. Раньше `_pc.addListener` дёргал
+              // `setState(() => _page = p)` на всё дерево — это был
+              // основной источник лагов при свайпе.
+              _Dots(controller: _pc, count: _onbPages.length),
+              const SizedBox(height: 22),
+              // Кнопка «Вставить ключ» — sticky внизу.
               PressScale(
-                onTap: loading ? null : () => onPaste(),
+                onTap: widget.loading ? null : () => widget.onPaste(),
                 scale: 0.97,
                 child: Container(
                   width: double.infinity,
@@ -457,7 +521,7 @@ class _OnboardingHero extends StatelessWidget {
                     mainAxisAlignment: MainAxisAlignment.center,
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      if (loading)
+                      if (widget.loading)
                         const SizedBox(
                           width: 22,
                           height: 22,
@@ -475,7 +539,7 @@ class _OnboardingHero extends StatelessWidget {
                         ),
                       const SizedBox(width: 10),
                       Text(
-                        loading ? 'Проверяем…' : 'Вставить ключ',
+                        widget.loading ? 'Проверяем…' : 'Вставить ключ',
                         style: const TextStyle(
                           color: Colors.white,
                           fontSize: 16,
@@ -487,6 +551,7 @@ class _OnboardingHero extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 12),
+              // Ссылка «Получить токен на GitHub» под кнопкой.
               PressScale(
                 onTap: () => launchUrl(
                   Uri.parse(
@@ -517,12 +582,16 @@ class _OnboardingHero extends StatelessWidget {
                   ),
                 ),
               ),
+              // Зона для возможной ошибки (auth/network). Реальный
+              // текст показывается только если `_error` непустой —
+              // для invalid-format / empty-clipboard мы НЕ ставим
+              // ошибку (см. _pasteToken: молча выходим).
               SizedBox(
-                height: error.isEmpty ? 6 : 22,
-                child: error.isEmpty
+                height: widget.error.isEmpty ? 6 : 22,
+                child: widget.error.isEmpty
                     ? const SizedBox.shrink()
                     : Text(
-                        error,
+                        widget.error,
                         style: const TextStyle(
                           color: AppColors.red,
                           fontSize: 13,
@@ -545,249 +614,133 @@ class _OnboardingHero extends StatelessWidget {
   }
 }
 
-// =====================================================================
-//  Анимированный фон: радиальные подписи функций от центра к краям
-// =====================================================================
-//
-// КАК УСТРОЕНО (важно для 60 fps на слабых девайсах):
-//   • Фиксированный пул из [_kParticleCount] «частиц». Каждая частица —
-//     это лейбл (Solar-иконка + короткая подпись), который летит из
-//     центра экрана к одному из 360° углов. Никакого спавна/удаления
-//     виджетов на каждом кадре: умершая частица «перерождается» (новый
-//     угол / лейбл / длительность / пик-альфа) ВНУТРИ того же объекта
-//     [_RadialParticle].
-//   • Один общий [Ticker] на весь фон. На каждый тик апдейтится только
-//     _animTimeMs (накопленное время с учётом текущего значения буста);
-//     это ValueNotifier<double>, на который подписан ValueListenableBuilder
-//     каждой _RadialParticleView — ребилдится только лист одной частицы,
-//     не вся стадия.
-//   • Защитная рамка вокруг хиро (лого + заголовок + подзаголовок):
-//     её координаты замеряются после первого кадра через GlobalKey
-//     (см. [_OnboardingStageState]). Частица, попавшая ВНУТРЬ — не
-//     рисуется (return SizedBox.shrink()). Снаружи альфа линейно
-//     поднимается от 0 до 1 на первых ~32 px от грани рамки — даёт
-//     эффект «выползания» подписей из-за периметра логотипа.
-//   • Радиус по времени: r = exitR · (t² · 0.5 + t · 0.5) — мягкий
-//     easeOut. Альфа во времени: fade-in 0..0.10, peak 0.10..0.82,
-//     fade-out 0.82..1.0 — частица плавно появляется и плавно гаснет.
-//   • Буст при удержании пальца: на каждый тик _boost экспоненциально
-//     интерполируется к 1.0 (без удержания) или к [_kBoostFactor]
-//     (с удержанием); _animTimeMs += dt · _boost. Никакого скачкообразного
-//     ускорения — анимация всегда остаётся плавной.
-//   • Каждый _RadialParticleView обёрнут в собственный RepaintBoundary,
-//     поэтому движение одной частицы НЕ заставляет соседние слои
-//     перерисовываться. Хиро (лого/заголовок) тоже в RepaintBoundary.
-//   • Альфа применяется напрямую к Color.withValues(alpha:) в
-//     colorFilter Iconify и TextStyle.color — НИКАКОГО Opacity-виджета
-//     (saveLayer убивает fps).
-
-/// Пул лейблов, из которого случайно берётся «начинка» очередной частицы.
-/// Длина пула > [_kParticleCount], так что в одном кадре повторов почти
-/// не бывает; даже если случайно совпало — это незаметно из-за разной
-/// фазы/альфы/направления.
-const List<_LabelFeature> _kLabelPool = [
-  _LabelFeature('solar:gallery-add-bold', 'Скриншоты к багам'),
-  _LabelFeature('solar:cloud-upload-bold', 'Заливай файлы'),
-  _LabelFeature('solar:download-square-bold', 'Скачивай APK'),
-  _LabelFeature('solar:folder-with-files-bold', 'Все репозитории'),
-  _LabelFeature('solar:branching-paths-up-bold', 'Ветки и коммиты'),
-  _LabelFeature('solar:eye-bold', 'Следи за статусом'),
-  _LabelFeature('solar:rocket-bold', 'Запускай Actions'),
-  _LabelFeature('solar:bell-bold', 'Уведомления'),
-  _LabelFeature('solar:star-bold', 'Избранные репо'),
-  _LabelFeature('solar:check-circle-bold', 'Сборка готова'),
-  _LabelFeature('solar:tag-bold', 'Релизы и теги'),
-  _LabelFeature('solar:bug-bold', 'Issues и баги'),
-];
-
-const int _kParticleCount = 11;
-const double _kParticleDurMinMs = 7000;
-const double _kParticleDurSpanMs = 3500;
-const double _kParticlePeakMin = 0.50;
-const double _kParticlePeakSpan = 0.22;
-const double _kBoostFactor = 1.6;
-const double _kBoostEase = 0.18;
-const double _kHeroFadeWidthPx = 32.0;
-const double _kHeroInflatePx = 8.0;
-
-/// Изменяемое состояние одной радиальной частицы. Поля мутабельные:
-/// когда возраст частицы превышает [durMs], мы «перерождаем» её
-/// внутри того же объекта (см. [_FeatureParticlesBackgroundState._respawn]),
-/// чтобы не аллоцировать новые объекты в горячем пути.
-class _RadialParticle {
-  double bornAtMs;
-  double durMs;
-  double angle;
-  double peakAlpha;
-  int labelIndex;
-  _RadialParticle({
-    required this.bornAtMs,
-    required this.durMs,
-    required this.angle,
-    required this.peakAlpha,
-    required this.labelIndex,
-  });
-}
-
-class _FeatureParticlesBackground extends StatefulWidget {
-  /// GlobalKey хиро-блока (Column с лого + заголовок + подзаголовок).
-  /// По нему мы замеряем защитную рамку.
-  final GlobalKey heroKey;
-
-  /// GlobalKey корневого Stack'а сцены — нужен как `ancestor` при
-  /// конвертации глобальных координат хиро в локальные координаты фона.
-  final GlobalKey stackKey;
-
-  /// «Палец нажат». Каждый тик мы интерполируем `_boost` к
-  /// [_kBoostFactor] (когда true) или к 1.0 (когда false).
-  final ValueListenable<bool> boostActive;
-
-  const _FeatureParticlesBackground({
-    required this.heroKey,
-    required this.stackKey,
-    required this.boostActive,
+/// Одна иконка для текущей _settledIndex страницы.
+///
+/// Раньше тут рисовался Lottie-стикер (cloud/robot/bag/lock.json) —
+/// большой Telegram JSON анимация, тяжёлая на декоде и paint'е.
+/// На свайпе PageView пользователь жаловался на лаги — Lottie
+/// постоянно играл свой 60fps цикл и забирал кучу UI-thread времени.
+///
+/// Теперь — обычный SVG из набора Solar (Iconify). SVG-иконки
+/// прогреты в `svg.cache` на старте (см. precacheAllSvgs), декодятся
+/// один раз и рисуются мгновенно. Никакой анимации внутри иконки —
+/// движение полностью под контролем AnimatedSwitcher между страницами.
+class _IconForPage extends StatelessWidget {
+  final _OnbPage page;
+  final bool isDark;
+  final Color textColor;
+  const _IconForPage({
+    super.key,
+    required this.page,
+    required this.isDark,
+    required this.textColor,
   });
 
   @override
-  State<_FeatureParticlesBackground> createState() =>
-      _FeatureParticlesBackgroundState();
+  Widget build(BuildContext context) {
+    final size = page.iconSize;
+    final isLogo = page.iconName == 'mdi:github';
+    // GitHub-лого:
+    //   • в светлой теме — акцентный фиолетовый (попросил юзер),
+    //   • в тёмной теме — нейтральный белый (pal.text) как раньше.
+    // Остальные иконки — всегда акцентный фиолетовый, чтобы страницы
+    // визуально не были «серой стеной».
+    final Color color = isLogo
+        ? (isDark ? textColor : AppColors.accent)
+        : AppColors.accent;
+    return Iconify(
+      page.iconName,
+      size: size,
+      color: color,
+    );
+  }
 }
 
-class _FeatureParticlesBackgroundState
-    extends State<_FeatureParticlesBackground>
-    with SingleTickerProviderStateMixin {
-  late final Ticker _ticker;
-  final math.Random _rng = math.Random();
-  late final List<_RadialParticle> _particles;
-
-  /// Накопленное «время анимации» с учётом текущего значения буста.
-  /// На него опираются возраст/фаза каждой частицы. На каждый тик
-  /// мы добавляем `dt · _boost` и кладём новое значение в
-  /// `_animTimeMs.value` — ValueListenableBuilder в листьях частиц
-  /// перерисует только себя.
-  final ValueNotifier<double> _animTimeMs = ValueNotifier<double>(0);
-  Duration _lastElapsed = Duration.zero;
-  double _boost = 1.0;
-
-  /// Замеренный хиро-ректангл (лого + заголовок + подзаголовок),
-  /// в системе координат корневого Stack'а. До первого пост-кадрового
-  /// замера — null; в этом состоянии радиальный fade-in работает без
-  /// защитной рамки (всего один-два кадра).
-  Rect? _heroRect;
-
+/// Текстовая половина одной онбординг-страницы (заголовок + подпись).
+/// Без иконки — иконка вынесена в отдельную зону над PageView'ом, чтобы
+/// при свайпе оставаться на месте (как стикер в Telegram). Свой
+/// внутренний горизонтальный паддинг 24px — потому что снаружи у
+/// PageView'а паддинга НЕТ (иначе соседние страницы при свайпе
+/// «обрезаются» по краю отступа, а юзер хочет чтобы они уходили за
+/// край экрана).
+class _OnbTextPage extends StatelessWidget {
+  final _OnbPage page;
+  const _OnbTextPage({required this.page});
   @override
-  void initState() {
-    super.initState();
-    _particles = List.generate(_kParticleCount, (_) {
-      final dur =
-          _kParticleDurMinMs + _rng.nextDouble() * _kParticleDurSpanMs;
-      // Стартовый возраст — случайный отрезок от 0 до durMs, чтобы все
-      // частицы не вылетали одновременно из одной точки.
-      final age = _rng.nextDouble() * dur;
-      return _RadialParticle(
-        bornAtMs: -age,
-        durMs: dur,
-        angle: _rng.nextDouble() * 2 * math.pi,
-        peakAlpha:
-            _kParticlePeakMin + _rng.nextDouble() * _kParticlePeakSpan,
-        labelIndex: _rng.nextInt(_kLabelPool.length),
-      );
-    });
-    _ticker = createTicker(_onTick)..start();
+  Widget build(BuildContext context) {
+    final pal = context.pal;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          // Внутреннего верхнего паддинга нет — gap между иконкой и
+          // заголовком задаётся снаружи (20px) ровно.
+          Text(
+            page.title,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 22,
+              fontWeight: FontWeight.w600,
+              letterSpacing: -.3,
+              color: pal.text,
+            ),
+          ),
+          const SizedBox(height: 10),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 320),
+            child: Text(
+              page.sub,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 14.5,
+                color: pal.sub,
+                height: 1.5,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
+}
 
-  void _onTick(Duration elapsed) {
-    if (_lastElapsed == Duration.zero) {
-      // На первом тике dt считать не от чего; просто запомним момент.
-      _lastElapsed = elapsed;
-      return;
-    }
-    final dtMs = (elapsed - _lastElapsed).inMicroseconds / 1000.0;
-    _lastElapsed = elapsed;
-    final boostTarget = widget.boostActive.value ? _kBoostFactor : 1.0;
-    _boost += (boostTarget - _boost) * _kBoostEase;
-    final nextMs = _animTimeMs.value + dtMs * _boost;
-    // «Умершие» частицы (age >= durMs) перерождаем — используем nextMs
-    // как новый bornAtMs, чтобы возраст начался с нуля сразу после
-    // обновления времени.
-    for (final p in _particles) {
-      if (nextMs - p.bornAtMs >= p.durMs) {
-        _respawn(p, nextMs);
-      }
-    }
-    _animTimeMs.value = nextMs;
-  }
+/// Точки-индикаторы. Слушают `PageController` через `AnimatedBuilder`,
+/// поэтому при свайпе пересобираются ТОЛЬКО они — родительский
+/// `_OnboardingStage` не делает rebuild на каждый кадр скролла.
+///
+/// Раньше было: addListener → setState на всю стадию → ребилд PageView,
+/// Lottie, кнопок и всего дерева 60+ раз в секунду = лаги.
+class _Dots extends StatelessWidget {
+  final PageController controller;
+  final int count;
+  const _Dots({required this.controller, required this.count});
 
-  void _respawn(_RadialParticle p, double now) {
-    p.bornAtMs = now;
-    p.durMs = _kParticleDurMinMs + _rng.nextDouble() * _kParticleDurSpanMs;
-    p.angle = _rng.nextDouble() * 2 * math.pi;
-    p.peakAlpha =
-        _kParticlePeakMin + _rng.nextDouble() * _kParticlePeakSpan;
-    p.labelIndex = _rng.nextInt(_kLabelPool.length);
-  }
-
-  @override
-  void dispose() {
-    _ticker.dispose();
-    _animTimeMs.dispose();
-    super.dispose();
-  }
-
-  /// Замеряет реальные координаты хиро-блока (лого + текст) относительно
-  /// корневого Stack'а сцены и обновляет [_heroRect], если он изменился.
-  /// Вызывается из postFrameCallback на каждом build'е — но фактически
-  /// меняется только при ресайзе/смене ориентации.
-  void _measureHero() {
-    if (!mounted) return;
-    final heroCtx = widget.heroKey.currentContext;
-    final stackCtx = widget.stackKey.currentContext;
-    if (heroCtx == null || stackCtx == null) return;
-    final heroBox = heroCtx.findRenderObject();
-    final stackBox = stackCtx.findRenderObject();
-    if (heroBox is! RenderBox || stackBox is! RenderBox) return;
-    if (!heroBox.attached || !stackBox.attached) return;
-    final origin = heroBox.localToGlobal(Offset.zero, ancestor: stackBox);
-    final newRect = origin & heroBox.size;
-    if (_heroRect != newRect) {
-      setState(() => _heroRect = newRect);
-    }
+  double _readPage() {
+    if (!controller.hasClients) return 0.0;
+    final p = controller.page;
+    if (p != null) return p;
+    // initialPage до того как контроллер прикреплён — берём из
+    // ScrollPosition'а виды viewportDimension/pixels (на ранних кадрах
+    // PageController.page может быть null).
+    return controller.initialPage.toDouble();
   }
 
   @override
   Widget build(BuildContext context) {
-    // Замер хиро откладываем на конец кадра — на момент build'а
-    // дочерние виджеты ещё не уложены, RenderBox может быть не attached.
-    WidgetsBinding.instance.addPostFrameCallback((_) => _measureHero());
-    final pal = context.pal;
-    final iconColor = AppColors.accent;
-    final textColor = pal.text;
     return RepaintBoundary(
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final size = Size(constraints.maxWidth, constraints.maxHeight);
-          // exitR — «радиус ухода»: половина диагонали + запас, чтобы
-          // лейблы успели уйти за край экрана прежде, чем их альфа
-          // упрётся в 0.
-          final exitR = math.sqrt(
-                    size.width * size.width + size.height * size.height,
-                  ) /
-                  2 +
-              24;
-          return Stack(
-            clipBehavior: Clip.hardEdge,
+      child: AnimatedBuilder(
+        animation: controller,
+        builder: (_, __) {
+          final position = _readPage();
+          return Row(
+            mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              for (int i = 0; i < _particles.length; i++)
-                _RadialParticleView(
-                  key: ValueKey<int>(i),
-                  particle: _particles[i],
-                  bgSize: size,
-                  exitR: exitR,
-                  heroRect: _heroRect,
-                  animTimeMs: _animTimeMs,
-                  iconColor: iconColor,
-                  textColor: textColor,
-                ),
+              for (int i = 0; i < count; i++) ...[
+                if (i > 0) const SizedBox(width: 8),
+                _SingleDot(active: (i - position).abs().clamp(0.0, 1.0)),
+              ],
             ],
           );
         },
@@ -796,120 +749,34 @@ class _FeatureParticlesBackgroundState
   }
 }
 
-/// Виджет одной радиальной частицы. ValueListenableBuilder ребилдит
-/// ТОЛЬКО Positioned внутри — родительский Stack из
-/// _FeatureParticlesBackground остаётся стабильным. Если частица
-/// «внутри» защитной рамки или её итоговая альфа ниже порога —
-/// возвращаем SizedBox.shrink(), чтобы не плодить невидимые слои.
-class _RadialParticleView extends StatelessWidget {
-  final _RadialParticle particle;
-  final Size bgSize;
-  final double exitR;
-  final Rect? heroRect;
-  final ValueListenable<double> animTimeMs;
-  final Color iconColor;
-  final Color textColor;
-  const _RadialParticleView({
-    super.key,
-    required this.particle,
-    required this.bgSize,
-    required this.exitR,
-    required this.heroRect,
-    required this.animTimeMs,
-    required this.iconColor,
-    required this.textColor,
-  });
-
+class _SingleDot extends StatelessWidget {
+  /// 0 — это активная страница, 1 — соседняя. Промежуточные значения
+  /// дают плавное «дыхание» при свайпе.
+  final double active;
+  const _SingleDot({required this.active});
   @override
   Widget build(BuildContext context) {
-    return RepaintBoundary(
-      child: ValueListenableBuilder<double>(
-        valueListenable: animTimeMs,
-        builder: (_, currentMs, __) {
-          final age = currentMs - particle.bornAtMs;
-          if (age <= 0) return const SizedBox.shrink();
-          final t = (age / particle.durMs).clamp(0.0, 1.0);
-          // Лёгкий easeOut: t² · 0.5 + t · 0.5 — начинает медленно,
-          // ускоряется к концу (как в прототипе варианта A).
-          final r = exitR * (t * t * 0.5 + t * 0.5);
-          final cx = bgSize.width / 2;
-          final cy = (heroRect != null)
-              ? heroRect!.center.dy
-              : bgSize.height * 0.40;
-          final x = cx + math.cos(particle.angle) * r;
-          final y = cy + math.sin(particle.angle) * r;
-          // Защитная рамка чуть «толще» реального хиро, чтобы лейблы
-          // не цепляли логотип краем.
-          final guard = heroRect?.inflate(_kHeroInflatePx);
-          final distToHero =
-              guard == null ? 1000.0 : _distToRect(Offset(x, y), guard);
-          if (distToHero <= 0) return const SizedBox.shrink();
-          final distAlpha =
-              (distToHero / _kHeroFadeWidthPx).clamp(0.0, 1.0);
-          final timeAlpha = _alphaByT(t, particle.peakAlpha);
-          final alpha = (distAlpha * timeAlpha).clamp(0.0, 1.0);
-          if (alpha < 0.01) return const SizedBox.shrink();
-          final label = _kLabelPool[particle.labelIndex];
-          final ic = iconColor.withValues(alpha: alpha);
-          final tc = textColor.withValues(alpha: alpha);
-          return Positioned(
-            left: x,
-            top: y,
-            // FractionalTranslation сдвигает лейбл так, чтобы (x, y)
-            // оказалась его геометрическим центром — без знания реальной
-            // ширины Row'а.
-            child: FractionalTranslation(
-              translation: const Offset(-0.5, -0.5),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Iconify(label.iconName, size: 18, color: ic),
-                  const SizedBox(width: 8),
-                  Text(
-                    label.text,
-                    maxLines: 1,
-                    softWrap: false,
-                    style: TextStyle(
-                      color: tc,
-                      fontSize: 14.5,
-                      fontWeight: FontWeight.w500,
-                      letterSpacing: 0.1,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          );
-        },
+    final pal = context.pal;
+    // 0 -> «полоска» (active), 1 -> «обычная точка» (inactive).
+    final t = 1.0 - active;
+    final width = 7 + 16 * t; // 7..23
+    final col = Color.lerp(
+      pal.sub.withValues(alpha: 0.32),
+      AppColors.accent,
+      t,
+    )!;
+    // Без AnimatedContainer — само значение `active` уже плавно меняется
+    // каждый кадр (из AnimatedBuilder на ScrollPosition), так что лишняя
+    // implicit-анимация даёт «дребезг» и тратит ресурсы.
+    return Container(
+      width: width,
+      height: 7,
+      decoration: BoxDecoration(
+        color: col,
+        borderRadius: BorderRadius.circular(8),
       ),
     );
   }
-}
-
-/// Манхэттен-проекция до прямоугольника по ортогональным осям, потом
-/// гипотенуза. 0 == точка внутри. Соответствует distToHeroRect в
-/// HTML-прототипе варианта A.
-double _distToRect(Offset p, Rect r) {
-  final dx = math.max(0.0, math.max(r.left - p.dx, p.dx - r.right));
-  final dy = math.max(0.0, math.max(r.top - p.dy, p.dy - r.bottom));
-  return math.sqrt(dx * dx + dy * dy);
-}
-
-/// Альфа по времени жизни частицы:
-///   t ∈ [0, fadeInUntil]            — линейный fade-in 0..peak
-///   t ∈ [fadeInUntil, fadeOutFrom]  — peak
-///   t ∈ [fadeOutFrom, 1]            — линейный fade-out peak..0
-double _alphaByT(
-  double t,
-  double peak, {
-  double fadeInUntil = 0.10,
-  double fadeOutFrom = 0.82,
-}) {
-  if (t < fadeInUntil) return peak * (t / fadeInUntil);
-  if (t > fadeOutFrom) {
-    return peak * (1 - (t - fadeOutFrom) / (1 - fadeOutFrom));
-  }
-  return peak;
 }
 
 // =====================================================================
