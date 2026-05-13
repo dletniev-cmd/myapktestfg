@@ -49,7 +49,23 @@ void _detachLiveTick() {
 
 class _ActionsScreenState extends State<ActionsScreen>
     with TickerProviderStateMixin {
+  /// Идёт ли inflight-запрос (любой — авто или ручной). Используется
+  /// только для дебаунса, чтобы не пускать второй параллельный
+  /// `_refresh()`.
   bool _loading = false;
+
+  /// Юзер вручную нажал кнопку обновления. В UI это и переводит
+  /// статус в `working` («Обновление…»). Фоновый авто-рефреш
+  /// (каждые 4 секунды) НЕ выставляет этот флаг — экран остаётся
+  /// в обычном виде, в шапке тихо обновляется счётчик «Xс назад».
+  bool _manualLoading = false;
+
+  /// Момент последнего успешного фетча (наш собственный, а не
+  /// время апдейта рана с сервера). Это и есть источник для
+  /// лейбла «Обновлено Xс назад» — он показывает свежесть наших
+  /// данных, не свежесть сборки.
+  DateTime? _lastFetched;
+
   String? _error;
   List<GhRun> _runs = [];
   String _filter = 'all';
@@ -71,6 +87,8 @@ class _ActionsScreenState extends State<ActionsScreen>
     AppState.I.addListener(_onState);
     _attachLiveTick();
     _restoreCache();
+    // Первый фетч на открытии — НЕ manual, чтобы шапка не
+    // мигнула в «Обновление…» при первом входе на экран.
     _refresh();
     _autoRefresh =
         Timer.periodic(const Duration(seconds: 4), (_) => _refresh());
@@ -115,13 +133,23 @@ class _ActionsScreenState extends State<ActionsScreen>
     }
   }
 
-  Future<void> _refresh() async {
+  Future<void> _refresh({bool manual = false}) async {
     final api = AppState.I.api;
     final repo = AppState.I.activeRepo;
     if (api == null || repo == null) return;
+    // Дебаунс: если параллельно идёт авто-рефреш, а юзер тапнул
+    // ручной — апгрейдим статус до manual (показываем «Обновление…»),
+    // но второй запрос не отправляем.
+    if (_loading) {
+      if (manual && !_manualLoading) {
+        setState(() => _manualLoading = true);
+      }
+      return;
+    }
     setState(() {
       _loading = true;
-      _refreshSpinCounter++;
+      _manualLoading = manual;
+      if (manual) _refreshSpinCounter++;
     });
     try {
       // Лимит 20 последних запусков — по просьбе пользователя. Раньше
@@ -136,7 +164,9 @@ class _ActionsScreenState extends State<ActionsScreen>
       setState(() {
         _runs = runs;
         _loading = false;
+        _manualLoading = false;
         _error = null;
+        _lastFetched = DateTime.now();
       });
       AppState.I.cachedRuns = runs;
       AppState.I.cachedRunsRepo = repo.fullName;
@@ -145,6 +175,7 @@ class _ActionsScreenState extends State<ActionsScreen>
       setState(() {
         _error = e.toString();
         _loading = false;
+        _manualLoading = false;
       });
     }
   }
@@ -186,14 +217,13 @@ class _ActionsScreenState extends State<ActionsScreen>
     final pal = context.pal;
     final repo = AppState.I.activeRepo;
     final running = _runs.where((r) => r.status != 'completed').length;
-    final lastUpdated = _runs.isEmpty
-        ? null
-        : (_runs.first.updatedAt.isNotEmpty
-            ? _runs.first.updatedAt
-            : _runs.first.createdAt);
+    // «Обновлено Xс назад» считаем от НАШЕГО последнего успешного
+    // фетча (не от времени апдейта рана). Авто-рефреш каждые 4 сек
+    // — счётчик в шапке плавно растёт от 0 до ~4 и сбрасывается.
+    final lastFetchedIso = _lastFetched?.toUtc().toIso8601String();
     final liveStatus = _error != null
         ? _LiveStatus.error
-        : (_loading
+        : (_manualLoading
             ? _LiveStatus.working
             : (running > 0 ? _LiveStatus.live : _LiveStatus.idle));
     return Stack(
@@ -215,10 +245,10 @@ class _ActionsScreenState extends State<ActionsScreen>
               _LiveHead(
                 status: liveStatus,
                 running: running,
-                lastUpdatedIso: lastUpdated,
+                lastUpdatedIso: lastFetchedIso,
                 spinCounter: _refreshSpinCounter,
-                loading: _loading,
-                onRefresh: _loading ? null : _refresh,
+                loading: _manualLoading,
+                onRefresh: _loading ? null : () => _refresh(manual: true),
               ),
               _ActionsFilter(
                 filter: _filter,
@@ -413,26 +443,11 @@ class _LiveHeadState extends State<_LiveHead>
     }
   }
 
-  String _statusText() {
-    switch (widget.status) {
-      case _LiveStatus.live:
-        return 'В реальном времени';
-      case _LiveStatus.working:
-        return widget.loading ? 'Обновление…' : 'Подключение…';
-      case _LiveStatus.error:
-        return 'Ошибка';
-      case _LiveStatus.idle:
-        return 'Ожидание';
-    }
-  }
-
   /// Текст для БОЛЬШОГО заголовка слева сверху.
-  /// Приоритет: ошибка → активная сборка → обновление → дефолт.
-  /// Без `running > 0` приоритета над `loading` каждые 4 сек авто-
-  /// рефреш дёргал бы заголовок «Идёт сборка» → «Обновление…» → и
-  /// обратно — пользователь жаловался: «верхний висит идёт сборка»,
-  /// т.е. заголовок должен стабильно держаться на «Идёт сборка»,
-  /// пока есть активные раны.
+  /// Приоритет: ошибка → активная сборка → ручное обновление → дефолт.
+  /// Авто-рефреш (каждые 4 сек) не выставляет `loading`, поэтому
+  /// заголовок «Идёт сборка» больше не дёргается на «Обновление…»
+  /// при фоновых апдейтах.
   String _titleText() {
     if (widget.status == _LiveStatus.error) return 'Ошибка';
     if (widget.running > 0) return 'Идёт сборка';
@@ -440,17 +455,17 @@ class _LiveHeadState extends State<_LiveHead>
     return 'Actions';
   }
 
-  String _agoText() {
-    if (widget.lastUpdatedIso == null) return '';
+  /// Сколько целых секунд прошло с последнего фетча. Для рендеринга
+  /// «Обновлено Xс назад» — обновляется каждую секунду через
+  /// `_liveSecondTick`, цифра анимируется отдельно.
+  int? _agoSeconds() {
+    if (widget.lastUpdatedIso == null) return null;
     try {
       final dt = DateTime.parse(widget.lastUpdatedIso!);
-      final diff = DateTime.now().toUtc().difference(dt.toUtc());
-      if (diff.inSeconds < 60) return '${diff.inSeconds}с назад';
-      if (diff.inMinutes < 60) return '${diff.inMinutes}м назад';
-      if (diff.inHours < 24) return '${diff.inHours}ч назад';
-      return '${diff.inDays}д назад';
+      final s = DateTime.now().toUtc().difference(dt.toUtc()).inSeconds;
+      return s < 0 ? 0 : s;
     } catch (_) {
-      return '';
+      return null;
     }
   }
 
@@ -552,16 +567,11 @@ class _LiveHeadState extends State<_LiveHead>
                     ),
                     const SizedBox(width: 7),
                     Flexible(
-                      // Сабтитл: одна AnimatedSwitcher, в которой ключ
-                      // зависит ТОЛЬКО от статуса (live/working/error/
-                      // idle), но НЕ от секундного лейбла «5с назад».
-                      // Раньше ключ был `ValueKey(полный_текст)`, и
-                      // каждую секунду (когда «5с» → «6с») AnimatedSwitcher
-                      // запускал свой 280мс fade+size-анимацию — текст
-                      // «дёргался» и заметно тратил кадр на пере-layout.
-                      // Теперь cross-fade играется ТОЛЬКО при настоящей
-                      // смене статуса (live ↔ working ↔ idle), а текст
-                      // внутри обновляется тихо через ValueListenableBuilder.
+                      // Сабтитл — кросс-фейд по статусу. Анимация
+                      // запускается ТОЛЬКО при смене состояния
+                      // (live ↔ working ↔ idle), а внутри
+                      // секундный счётчик «Xс назад» анимируется
+                      // отдельно через _AnimatedAgoLabel.
                       child: AnimatedSwitcher(
                         duration: const Duration(milliseconds: 280),
                         switchInCurve: Curves.easeOutCubic,
@@ -586,22 +596,8 @@ class _LiveHeadState extends State<_LiveHead>
                           ],
                         ),
                         child: KeyedSubtree(
-                          // Ключ — статус, а НЕ полный текст. Это и есть
-                          // фикс: «X сек назад» обновляется внутри без
-                          // re-trigger'а внешней анимации.
                           key: ValueKey<_LiveStatus>(widget.status),
-                          child: ValueListenableBuilder<int>(
-                            valueListenable: _liveSecondTick,
-                            builder: (_, __, ___) {
-                              final ago = _agoText();
-                              return Text(
-                                _composeText(
-                                    running: widget.running, ago: ago),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              );
-                            },
-                          ),
+                          child: _buildSubtitle(),
                         ),
                       ),
                     ),
@@ -625,18 +621,111 @@ class _LiveHeadState extends State<_LiveHead>
     );
   }
 
-  String _composeText({required int running, required String ago}) {
-    final base = _statusText();
-    final parts = <String>[base];
-    if (widget.status == _LiveStatus.live && running > 0) {
-      parts.add('$running активных');
+  /// Сабтитл по статусу:
+  /// - error → "Ошибка"
+  /// - working (ручное обновление) → "Обновление…"
+  /// - live (есть активная сборка) → "Обновлено Xс назад · N активных"
+  /// - idle (нет активных) → "Обновлено Xс назад"
+  /// - до первого фетча — "Ожидание"
+  Widget _buildSubtitle() {
+    switch (widget.status) {
+      case _LiveStatus.error:
+        return const Text('Ошибка',
+            maxLines: 1, overflow: TextOverflow.ellipsis);
+      case _LiveStatus.working:
+        return const Text('Обновление…',
+            maxLines: 1, overflow: TextOverflow.ellipsis);
+      case _LiveStatus.live:
+      case _LiveStatus.idle:
+        if (widget.lastUpdatedIso == null) {
+          return const Text('Ожидание',
+              maxLines: 1, overflow: TextOverflow.ellipsis);
+        }
+        final tail = widget.status == _LiveStatus.live && widget.running > 0
+            ? ' · ${widget.running} активных'
+            : '';
+        return _AnimatedAgoLabel(
+          getSeconds: _agoSeconds,
+          suffix: tail,
+        );
     }
-    if (ago.isNotEmpty &&
-        (widget.status == _LiveStatus.live ||
-            widget.status == _LiveStatus.idle)) {
-      parts.add(ago);
-    }
-    return parts.join(' · ');
+  }
+}
+
+/// Сабтитл «Обновлено Xс назад» с плавной анимацией смены цифры
+/// раз в секунду. Подписывается на `_liveSecondTick`, и при смене
+/// `_agoSeconds()` прокручивает старое значение вверх (fade+slide),
+/// а новое выезжает снизу — эффект «бегущей цифры», как в M3
+/// expressive «динамичных» компонентах.
+class _AnimatedAgoLabel extends StatelessWidget {
+  final int? Function() getSeconds;
+  final String suffix;
+  const _AnimatedAgoLabel({required this.getSeconds, required this.suffix});
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<int>(
+      valueListenable: _liveSecondTick,
+      builder: (_, __, ___) {
+        final s = getSeconds() ?? 0;
+        final label = _formatAgo(s);
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('Обновлено '),
+            // Анимируем только сам лейбл «Xс/Xм/Xч/Xд» — он и есть
+            // та цифра, что меняется каждую секунду. Остальной
+            // текст статичен и не дёргает анимацию.
+            ClipRect(
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 260),
+                switchInCurve: Curves.easeOutCubic,
+                switchOutCurve: Curves.easeInCubic,
+                transitionBuilder: (child, anim) {
+                  final slide = Tween<Offset>(
+                    begin: const Offset(0, 0.6),
+                    end: Offset.zero,
+                  ).animate(anim);
+                  return FadeTransition(
+                    opacity: anim,
+                    child: SlideTransition(position: slide, child: child),
+                  );
+                },
+                layoutBuilder: (currentChild, previousChildren) => Stack(
+                  alignment: Alignment.centerLeft,
+                  children: [
+                    ...previousChildren,
+                    if (currentChild != null) currentChild,
+                  ],
+                ),
+                child: Text(
+                  label,
+                  key: ValueKey<String>(label),
+                  maxLines: 1,
+                  softWrap: false,
+                ),
+              ),
+            ),
+            Text(' назад$suffix',
+                maxLines: 1, overflow: TextOverflow.ellipsis),
+          ],
+        );
+      },
+    );
+  }
+
+  String _formatAgo(int seconds) {
+    // ignore: unnecessary_brace_in_string_interps
+    if (seconds < 60) return '${seconds}с';
+    final m = seconds ~/ 60;
+    // ignore: unnecessary_brace_in_string_interps
+    if (m < 60) return '${m}м';
+    final h = m ~/ 60;
+    // ignore: unnecessary_brace_in_string_interps
+    if (h < 24) return '${h}ч';
+    final d = h ~/ 24;
+    // ignore: unnecessary_brace_in_string_interps
+    return '${d}д';
   }
 }
 
@@ -1152,12 +1241,13 @@ double computeRunProgress(GhRun run,
   }
 }
 
-/// Полоса прогресса активных ранов (сборка GitHub Actions). Новый
-/// M3 linear-индикатор: прямая полоса со скруглёнными концами +
-/// gap между активной частью и треком + stop-точка в конце трека
-/// (https://m3.material.io/components/progress-indicators/overview).
-/// Волнистый вариант оставлен только при ЗАЛИВКЕ файлов в profile —
-/// для сборки юзер явно просил «прямую» (см. M3 spec screenshot).
+/// Полоса прогресса активных ранов (сборка GitHub Actions).
+/// Простая скруглённая полоса: серый трек, фиолетовая активная часть.
+/// Без M3 stop-точки и gap'а — юзер попросил вернуть «старую»
+/// простую полосу (M3-вариант остаётся только при заливке файлов в
+/// профиле). Прогресс плавно интерполируется через
+/// TweenAnimationBuilder, чтобы при пуллинге API раз в 4 секунды
+/// бар не прыгал скачками.
 class RunProgressBar extends StatelessWidget {
   final double progress;
   const RunProgressBar({super.key, required this.progress});
@@ -1165,11 +1255,30 @@ class RunProgressBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final pal = context.pal;
-    return M3LinearProgress(
-      progress: progress,
-      activeColor: AppColors.accent,
-      trackColor: pal.cont2,
-      wavy: false,
+    return RepaintBoundary(
+      child: SizedBox(
+        height: 6,
+        width: double.infinity,
+        child: TweenAnimationBuilder<double>(
+          tween: Tween<double>(begin: 0.0, end: progress.clamp(0.0, 1.0)),
+          duration: const Duration(milliseconds: 800),
+          curve: Curves.easeOutCubic,
+          builder: (_, p, __) {
+            return ClipRRect(
+              borderRadius: BorderRadius.circular(3),
+              child: Stack(
+                children: [
+                  Container(color: pal.cont2),
+                  FractionallySizedBox(
+                    widthFactor: p,
+                    child: Container(color: AppColors.accent),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      ),
     );
   }
 }
