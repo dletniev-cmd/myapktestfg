@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import '../widgets/m3_loading.dart';
 
 import '../api.dart';
 import '../iconify.dart';
@@ -261,7 +262,7 @@ class _ActionsScreenState extends State<ActionsScreen>
       return wrap(Padding(
         padding: const EdgeInsets.only(top: 80),
         child: Center(
-            child: CircularProgressIndicator(
+            child: M3LoadingIndicator(
                 color: AppColors.accent, strokeCap: StrokeCap.round)),
       ));
     }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../iconify.dart';
 import '../theme.dart';
+import 'm3_loading.dart';
 
 /// Общие виджеты UI: тайлы, кнопки, чипы, сегменты и пр.
 
@@ -543,7 +544,7 @@ class PushButton extends StatelessWidget {
               const SizedBox(
                 width: 22,
                 height: 22,
-                child: CircularProgressIndicator(
+                child: M3LoadingIndicator(
                     color: Colors.white,
                     strokeWidth: 2.4,
                     strokeCap: StrokeCap.round),

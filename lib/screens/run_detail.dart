@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../widgets/m3_loading.dart';
 
 import '../api.dart';
 import '../iconify.dart';
@@ -219,7 +220,7 @@ class _RunDetailScreenState extends State<RunDetailScreen> {
                             child: SizedBox(
                               width: 14,
                               height: 14,
-                              child: CircularProgressIndicator(
+                              child: M3LoadingIndicator(
                                 strokeWidth: 2,
                                 color: pal.sub,
                                 strokeCap: StrokeCap.round,
@@ -555,7 +556,7 @@ class _ActionBtn extends StatelessWidget {
                         key: const ValueKey('spin'),
                         width: 16,
                         height: 16,
-                        child: CircularProgressIndicator(
+                        child: M3LoadingIndicator(
                           strokeWidth: 2,
                           color: fg,
                           strokeCap: StrokeCap.round,
@@ -700,7 +701,7 @@ class _ArtifactCardState extends State<_ArtifactCard> {
                       ? SizedBox(
                           width: 20,
                           height: 20,
-                          child: CircularProgressIndicator(
+                          child: M3LoadingIndicator(
                             value: progress > 0 ? progress : null,
                             strokeWidth: 2.5,
                             strokeCap: StrokeCap.round,

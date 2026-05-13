@@ -2,6 +2,7 @@ import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import '../widgets/m3_loading.dart';
 
 import '../iconify.dart';
 import '../navigation.dart';
@@ -223,7 +224,7 @@ class _UploadScreenState extends State<UploadScreen> {
                         SizedBox(
                           width: 48,
                           height: 48,
-                          child: CircularProgressIndicator(
+                          child: M3LoadingIndicator(
                               strokeWidth: 3,
                               color: AppColors.accent,
                               strokeCap: StrokeCap.round),

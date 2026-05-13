@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:math' as math;
+import '../widgets/m3_loading.dart';
 
 import 'package:flutter/material.dart';
 
@@ -827,7 +828,7 @@ class _ClearButton extends StatelessWidget {
             ? SizedBox(
                 width: 22,
                 height: 22,
-                child: CircularProgressIndicator(
+                child: M3LoadingIndicator(
                   color: fg,
                   strokeWidth: 2.4,
                   strokeCap: StrokeCap.round,

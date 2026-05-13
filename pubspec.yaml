@@ -32,6 +32,14 @@ dependencies:
   # сравнения с remote tree — это позволяет пушить только изменённые
   # или новые файлы, а не всё подряд.
   crypto: ^3.0.3
+  # Material 3 Expressive Loading Indicator — официальный порт из
+  # androidx.compose.material3 на Flutter. Используется через
+  # обёртку в lib/widgets/m3_loading.dart (M3LoadingIndicator),
+  # которая drop-in заменяет CircularProgressIndicator по всему
+  # приложению. material_new_shapes даёт те же RoundedPolygon/Morph,
+  # что и Compose, поэтому формы и тайминги совпадают с M3 спекой.
+  expressive_loading_indicator: ^0.0.1
+  material_new_shapes: ^1.0.0
 
 dev_dependencies:
   flutter_test:

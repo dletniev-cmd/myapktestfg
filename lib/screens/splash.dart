@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import '../widgets/m3_loading.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
@@ -131,48 +132,69 @@ class _SplashScreenState extends State<SplashScreen> {
     // переключалось мгновенно — это и воспринималось как «лаг темы».
     // Теперь все слои меняют цвет одновременно — переключение мгновенное
     // и чистое.
+    // ВАЖНО: фоновые слои (_CodeRainBackground / _FeatureParticlesBackground)
+    // лежат СНАРУЖИ SafeArea и расползаются на весь экран — иначе сверху
+    // (под status bar) и снизу появлялась видимая «полоса», за которую
+    // строки кода и частицы не залетали.
+    // Listener тоже снаружи SafeArea — удержание пальца ловится на любой
+    // точке экрана, включая зону под статусбаром и навбаром.
     return Scaffold(
       backgroundColor: pal.bg,
-      body: SafeArea(
-        child: Stack(
-          children: [
-            // Основной контент стадии (онбординг / разрешения).
-            Positioned.fill(
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 320),
-                switchInCurve: Curves.easeOutCubic,
-                switchOutCurve: Curves.easeInCubic,
-                transitionBuilder: (child, anim) {
-                  final slide = Tween<Offset>(
-                    begin: const Offset(0.06, 0),
-                    end: Offset.zero,
-                  ).animate(anim);
-                  return FadeTransition(
-                    opacity: anim,
-                    child: SlideTransition(position: slide, child: child),
-                  );
-                },
-                child: _stage == 0
-                    ? _OnboardingStage(
-                        key: const ValueKey('onb'),
-                        loading: _loading,
-                        error: _error,
-                        onPaste: _pasteToken,
-                      )
-                    : _PermissionsStage(
-                        key: const ValueKey('perm'),
-                        onStart: _finishToShell,
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          const Positioned.fill(child: _CodeRainBackground()),
+          const Positioned.fill(child: _FeatureParticlesBackground()),
+          Positioned.fill(
+            child: Listener(
+              behavior: HitTestBehavior.translucent,
+              onPointerDown: (_) => _kSplashSpeedTarget.value = 2.2,
+              onPointerUp: (_) => _kSplashSpeedTarget.value = 1.0,
+              onPointerCancel: (_) => _kSplashSpeedTarget.value = 1.0,
+              child: SafeArea(
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 320),
+                        switchInCurve: Curves.easeOutCubic,
+                        switchOutCurve: Curves.easeInCubic,
+                        transitionBuilder: (child, anim) {
+                          final slide = Tween<Offset>(
+                            begin: const Offset(0.06, 0),
+                            end: Offset.zero,
+                          ).animate(anim);
+                          return FadeTransition(
+                            opacity: anim,
+                            child: SlideTransition(
+                                position: slide, child: child),
+                          );
+                        },
+                        child: _stage == 0
+                            ? _OnboardingStage(
+                                key: const ValueKey('onb'),
+                                loading: _loading,
+                                error: _error,
+                                onPaste: _pasteToken,
+                              )
+                            : _PermissionsStage(
+                                key: const ValueKey('perm'),
+                                onStart: _finishToShell,
+                              ),
                       ),
+                    ),
+                    if (_stage == 0)
+                      Positioned(
+                        top: 8,
+                        right: 12,
+                        child: _ThemeToggleButton(),
+                      ),
+                  ],
+                ),
               ),
             ),
-            if (_stage == 0)
-              Positioned(
-                top: 8,
-                right: 12,
-                child: _ThemeToggleButton(),
-              ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -319,9 +341,6 @@ class _OnboardingStage extends StatefulWidget {
 }
 
 class _OnboardingStageState extends State<_OnboardingStage> {
-  void _press() => _kSplashSpeedTarget.value = 2.2;
-  void _release() => _kSplashSpeedTarget.value = 1.0;
-
   @override
   void dispose() {
     _kSplashSpeedTarget.value = 1.0;
@@ -331,30 +350,15 @@ class _OnboardingStageState extends State<_OnboardingStage> {
   @override
   Widget build(BuildContext context) {
     final pal = context.pal;
-    // Listener на всём экране ловит палец, но НЕ перехватывает тапы по
-    // кнопкам (behavior: deferToChild) — так «Вставить ключ» и smile-toggle
-    // продолжают работать. Скорость доводится плавно — через ease в тиках.
-    return Listener(
-      behavior: HitTestBehavior.translucent,
-      onPointerDown: (_) => _press(),
-      onPointerUp: (_) => _release(),
-      onPointerCancel: (_) => _release(),
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          const Positioned.fill(child: _CodeRainBackground()),
-          const Positioned.fill(child: _FeatureParticlesBackground()),
-          Positioned.fill(
-            child: RepaintBoundary(
-              child: _OnboardingHero(
-                loading: widget.loading,
-                error: widget.error,
-                onPaste: widget.onPaste,
-                pal: pal,
-              ),
-            ),
-          ),
-        ],
+    // Фоны (code rain + particles) и Listener для удержания пальца теперь
+    // живут на уровне _SplashScreen — снаружи SafeArea, во весь экран.
+    // Здесь остаётся только сам hero-контент онбординга.
+    return RepaintBoundary(
+      child: _OnboardingHero(
+        loading: widget.loading,
+        error: widget.error,
+        onPaste: widget.onPaste,
+        pal: pal,
       ),
     );
   }
@@ -452,7 +456,7 @@ class _OnboardingHero extends StatelessWidget {
                         const SizedBox(
                           width: 22,
                           height: 22,
-                          child: CircularProgressIndicator(
+                          child: M3LoadingIndicator(
                             color: Colors.white,
                             strokeWidth: 2.4,
                             strokeCap: StrokeCap.round,
@@ -646,7 +650,7 @@ class _FeatureParticlesBackgroundState
 
   void _onTick(Duration elapsed) {
     // dt в микросекундах
-    final dtMicros = (elapsed - _realLast).inMicroseconds.clamp(0, 50000);
+    final dtMicros = (elapsed - _realLast).inMicroseconds.clamp(0, 250000);
     _realLast = elapsed;
 
     // Плавный ease скорости к таргету. Коэффициент подобран так, чтобы
@@ -943,7 +947,7 @@ class _CodeRainBackgroundState extends State<_CodeRainBackground>
   }
 
   void _onTick(Duration elapsed) {
-    final dtMicros = (elapsed - _realLast).inMicroseconds.clamp(0, 50000);
+    final dtMicros = (elapsed - _realLast).inMicroseconds.clamp(0, 250000);
     _realLast = elapsed;
     final target = _kSplashSpeedTarget.value;
     final k = 1 - math.exp(-dtMicros / 220000.0);

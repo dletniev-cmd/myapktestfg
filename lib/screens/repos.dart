@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../widgets/m3_loading.dart';
 
 import '../api.dart';
 import '../iconify.dart';
@@ -180,7 +181,7 @@ class _ReposScreenState extends State<ReposScreen> {
                       child: SizedBox(
                         width: 36,
                         height: 36,
-                        child: CircularProgressIndicator(
+                        child: M3LoadingIndicator(
                           strokeWidth: 3,
                           color: AppColors.accent,
                           strokeCap: StrokeCap.round,

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../widgets/m3_loading.dart';
 
 import '../api.dart';
 import '../iconify.dart';
@@ -162,7 +163,7 @@ class _RepoTreeScreenState extends State<RepoTreeScreen> {
           Positioned.fill(
             child: _loading
                 ? Center(
-                    child: CircularProgressIndicator(
+                    child: M3LoadingIndicator(
                         color: AppColors.accent, strokeCap: StrokeCap.round))
                 : _error != null
                     ? Padding(
