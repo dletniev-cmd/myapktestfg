@@ -161,23 +161,15 @@ class _ShellScreenState extends State<ShellScreen>
       body: Stack(
         children: [
           Positioned.fill(
-            // Stack из _AnimatedTabPage'й. Каждая страница сохраняет
-            // свой State (как было с IndexedStack), но переход теперь
-            // плавный: исходящая вкладка fade+scale-out, входящая —
-            // fade+scale-in, обе анимации параллельно за 280мс
-            // easeOutCubic. После полного fade-out страница ставится
-            // в Offstage — она больше не платит за рендер, но State
-            // остаётся в памяти (scroll-offset, фильтры, таймеры).
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                for (var i = 0; i < pages.length; i++)
-                  _AnimatedTabPage(
-                    key: ValueKey<int>(i),
-                    active: i == _index,
-                    child: pages[i],
-                  ),
-              ],
+            // IndexedStack сохраняет State каждой вкладки между
+            // переключениями — никаких пере-создания экранов/контроллеров.
+            // Все ListView'ы сохраняют scroll-offset, шапки не мигают,
+            // фильтры не сбрасываются. Это даёт «мгновенный» переход
+            // между табами без лагов от инициализации.
+            child: IndexedStack(
+              index: _index,
+              sizing: StackFit.expand,
+              children: pages,
             ),
           ),
           Positioned(
@@ -234,78 +226,6 @@ class _ShellScreenState extends State<ShellScreen>
           ),
         ],
       ),
-    );
-  }
-}
-
-/// Одна страница в Stack'е таб-навигации. Внутренне держит
-/// AnimationController, который форвардит при активации и
-/// реверсит при деактивации. Пока полностью невидим — `Offstage`
-/// убирает её из render-tree (но не из widget-tree → State цел).
-class _AnimatedTabPage extends StatefulWidget {
-  final bool active;
-  final Widget child;
-  const _AnimatedTabPage({
-    super.key,
-    required this.active,
-    required this.child,
-  });
-
-  @override
-  State<_AnimatedTabPage> createState() => _AnimatedTabPageState();
-}
-
-class _AnimatedTabPageState extends State<_AnimatedTabPage>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 280),
-    value: widget.active ? 1.0 : 0.0,
-  );
-
-  @override
-  void didUpdateWidget(covariant _AnimatedTabPage old) {
-    super.didUpdateWidget(old);
-    if (widget.active != old.active) {
-      if (widget.active) {
-        _ctrl.forward();
-      } else {
-        _ctrl.reverse();
-      }
-    }
-  }
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _ctrl,
-      child: widget.child,
-      builder: (_, child) {
-        final v = Curves.easeOutCubic.transform(_ctrl.value);
-        // Полностью скрытая и неактивная страница — Offstage. Так
-        // мы не платим рендером за невидимый дубль контента, и
-        // тапы внутри неё в принципе не доходят.
-        final hidden = v == 0.0 && !widget.active;
-        return IgnorePointer(
-          ignoring: !widget.active,
-          child: Offstage(
-            offstage: hidden,
-            child: Opacity(
-              opacity: v,
-              child: Transform.scale(
-                scale: 0.97 + 0.03 * v,
-                child: child,
-              ),
-            ),
-          ),
-        );
-      },
     );
   }
 }
