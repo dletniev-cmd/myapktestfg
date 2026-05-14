@@ -1,12 +1,12 @@
 #!/bin/sh
 # This is a generated file; do not edit or check into version control.
-export "FLUTTER_ROOT=/tmp/flutter_sdk"
-export "FLUTTER_APPLICATION_PATH=/home/ubuntu/work/gp/app"
+export "FLUTTER_ROOT=/home/ubuntu/flutter"
+export "FLUTTER_APPLICATION_PATH=/home/ubuntu/work/project/app"
 export "COCOAPODS_PARALLEL_CODE_SIGN=true"
 export "FLUTTER_TARGET=lib/main.dart"
 export "FLUTTER_BUILD_DIR=build"
-export "FLUTTER_BUILD_NAME=1.9.14"
-export "FLUTTER_BUILD_NUMBER=77"
+export "FLUTTER_BUILD_NAME=1.9.12"
+export "FLUTTER_BUILD_NUMBER=75"
 export "DART_OBFUSCATION=false"
 export "TRACK_WIDGET_CREATION=true"
 export "TREE_SHAKE_ICONS=false"

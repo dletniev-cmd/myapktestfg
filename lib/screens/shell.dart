@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:liquid_glass_renderer/liquid_glass_renderer.dart';
 
 import '../iconify.dart';
 import '../state.dart';
@@ -291,27 +290,17 @@ class _IslandNavState extends State<_IslandNav>
     final pal = context.pal;
     final pillX = widget.index * (_btnW + _gap);
 
-    // НАВБАР = «ЖИДКОЕ СТЕКЛО». liquid_glass_renderer берёт пиксели
-    // из-за своих границ и рисует refraction-эффект — как iOS 18
-    // glass. Производительность приемлема ПРИ УСЛОВИИ что:
-    //   1) используется Impeller (в Flutter 3.27+ включён по дефолту
-    //      на Android и iOS);
-    //   2) пиксельная площадь LiquidGlassLayer МИНИМАЛЬНА (только
-    //      под сам пилл навбара). Чем больше площадь, тем дороже
-    //      рендер текстуры.
-    //   3) форма СТАТИЧНАЯ (не анимируется) — glass рендерится раз
-    //      и кешируется. Squash-анимация активного pill'а ВНУТРИ
-    //      стекла не вызывает re-render самого стекла, потому что
-    //      сам контейнер LiquidGlass статичен.
-    const glassWidth = _btnW * 3 + _gap * 2 + _padH * 2;
-    const glassHeight = _btnH + _padV * 2;
-
-    // Цвет «стекла». Для тёмной темы — слегка светлый тинт, для
-    // светлой — тонкий белый оверлей. Без этого иконки плохо
-    // читались бы на пёстром контенте под навбаром.
-    final glassTint = pal.isDark
-        ? const Color(0x33FFFFFF) // ~20% белого поверх
-        : const Color(0x4DFFFFFF); // ~30% белого поверх
+    // Раньше тут был BackdropFilter(ImageFilter.blur(18,18)) — постоянный
+    // runtime-блюр на навбаре, который ВСЕГДА виден поверх контента.
+    // Это пересчитывалось каждый кадр, дорого по GPU и заметно тормозило
+    // при любых анимациях: скролле, push-перехоadах между экранами,
+    // дроп-капле клавиатуры. Заменили на сплошной полупрозрачный фон
+    // (с чуть более высоким alpha — чтобы читалось так же чётко).
+    // На glass-эффект внешне это влияет минимально: под навбаром
+    // обычно либо контейнеры pal.cont, либо однородный фон pal.bg.
+    final bg = pal.isDark
+        ? const Color(0xF21C1C1E) // dark: ~0.95 alpha
+        : const Color(0xF2FFFFFF); // light: ~0.95 alpha
 
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -333,97 +322,70 @@ class _IslandNavState extends State<_IslandNav>
           ),
         ],
       ),
-      child: SizedBox(
-        width: glassWidth,
-        height: glassHeight,
-        // LiquidGlassLayer рендерит жидкое стекло В ПРЕДЕЛАХ своего
-        // bounds. Чем меньше площадь, тем дешевле текстура — мы
-        // ограничиваем её строго размером навбара.
-        child: LiquidGlassLayer(
-          settings: LiquidGlassSettings(
-            // thickness=12 — лёгкое 3D-преломление по краям.
-            thickness: 12,
-            // blur — внутри стекла. 6px достаточно, чтобы получить
-            // «матовый» эффект без перебора (большой blur = дорогой
-            // GPU pass). Под навбаром в приложении обычно однородный
-            // фон или контентные карточки — больше блюра незачем.
-            blur: 6,
-            glassColor: glassTint,
-            ambientStrength: pal.isDark ? 0.5 : 0.4,
-            lightAngle: 1.2, // свет сверху-слева
-            lightIntensity: pal.isDark ? 1.0 : 0.8,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(28),
+        child: Container(
+          padding: const EdgeInsets.symmetric(
+              horizontal: _padH, vertical: _padV),
+          decoration: BoxDecoration(
+            color: bg,
+            borderRadius: BorderRadius.circular(28),
           ),
-          child: LiquidGlass(
-            shape: const LiquidRoundedSuperellipse(
-              borderRadius: 28,
-            ),
-            // glassContainsChild=false — child рисуется ПОВЕРХ стекла
-            // (иконки и pill НЕ преломляются). Если true — иконки
-            // искажаются squish'ем refraction'а, что выглядит коряво
-            // для SVG-иконок.
-            glassContainsChild: false,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(
-                  horizontal: _padH, vertical: _padV),
-              child: SizedBox(
-                width: _btnW * 3 + _gap * 2,
-                height: _btnH,
-                child: Stack(
-                  clipBehavior: Clip.none,
-                  children: [
-                    // Перемещение pill'а — AnimatedPositioned с длительностью
-                    // 320ms (раньше 420ms — слишком долго на тапе).
-                    AnimatedPositioned(
-                      duration: const Duration(milliseconds: 320),
-                      curve: const Cubic(.32, .72, .00, 1),
-                      left: pillX,
-                      top: 0,
-                      width: _btnW,
-                      height: _btnH,
-                      child: AnimatedBuilder(
-                        animation: _squashCtl,
-                        builder: (_, child) {
-                          // squash 0->1: 0 → 1.12 → 1.0 (parabolic)
-                          final t = _squashCtl.value;
-                          final v = 1.0 + 0.12 * (1.0 - (2 * t - 1).abs());
-                          return Transform.scale(
-                              scaleX: v, scaleY: 1.0, child: child);
-                        },
-                        child: Container(
-                          decoration: BoxDecoration(
-                            // На стекле акцент видно лучше с чуть более
-                            // высоким alpha (.22 vs .18 ранее).
-                            color: AppColors.accent.withValues(alpha: .22),
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                        ),
+          child: SizedBox(
+            width: _btnW * 3 + _gap * 2,
+            height: _btnH,
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                // Перемещение pill'а — AnimatedPositioned с длительностью
+                // 320ms (раньше 420ms — слишком долго на тапе).
+                AnimatedPositioned(
+                  duration: const Duration(milliseconds: 320),
+                  curve: const Cubic(.32, .72, .00, 1),
+                  left: pillX,
+                  top: 0,
+                  width: _btnW,
+                  height: _btnH,
+                  child: AnimatedBuilder(
+                    animation: _squashCtl,
+                    builder: (_, child) {
+                      // squash 0->1: 0 → 1.12 → 1.0 (parabolic)
+                      final t = _squashCtl.value;
+                      final v = 1.0 + 0.12 * (1.0 - (2 * t - 1).abs());
+                      return Transform.scale(
+                          scaleX: v, scaleY: 1.0, child: child);
+                    },
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: AppColors.accent.withValues(alpha: .18),
+                        borderRadius: BorderRadius.circular(20),
                       ),
                     ),
-                    Row(
-                      children: [
-                        _NavBtn(
-                          icon: 'solar:play-circle-bold',
-                          active: widget.index == 0,
-                          onTap: () => widget.onChanged(0),
-                        ),
-                        const SizedBox(width: _gap),
-                        _NavBtn(
-                          icon: 'solar:bug-bold',
-                          active: widget.index == 1,
-                          onTap: () => widget.onChanged(1),
-                        ),
-                        const SizedBox(width: _gap),
-                        _NavAvatarBtn(
-                          active: widget.index == 2,
-                          avatarUrl: widget.avatarUrl,
-                          login: widget.login,
-                          onTap: () => widget.onChanged(2),
-                        ),
-                      ],
+                  ),
+                ),
+                Row(
+                  children: [
+                    _NavBtn(
+                      icon: 'solar:play-circle-bold',
+                      active: widget.index == 0,
+                      onTap: () => widget.onChanged(0),
+                    ),
+                    const SizedBox(width: _gap),
+                    _NavBtn(
+                      icon: 'solar:bug-bold',
+                      active: widget.index == 1,
+                      onTap: () => widget.onChanged(1),
+                    ),
+                    const SizedBox(width: _gap),
+                    _NavAvatarBtn(
+                      active: widget.index == 2,
+                      avatarUrl: widget.avatarUrl,
+                      login: widget.login,
+                      onTap: () => widget.onChanged(2),
                     ),
                   ],
                 ),
-              ),
+              ],
             ),
           ),
         ),

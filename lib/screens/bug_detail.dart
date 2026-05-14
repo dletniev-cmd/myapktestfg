@@ -724,27 +724,18 @@ class _RoundedShot extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     // Юзер (баг n9225): «лагает свайпанье скринов» в полноэкранном
-    // вьювере. Причина — PageView держит 3 страницы одновременно,
-    // на каждой Image.memory декодит PNG заново.
+    // вьювере. Причина — PageView держит 3 страницы одновременно, на
+    // каждой Image.memory декодит ПОЛНОРАЗМЕРНЫЙ PNG (1-3 МБ, ~1080×~2400),
+    // и Skia рендерит его в кадр, в котором всё равно физически ~412×~915
+    // dp. То есть мы декодим раз в 2-3 больше пикселей, чем рисуем, и
+    // это бьёт по UI-треду при каждом свайпе.
     //
-    // Раньше здесь было `cacheWidth: device_width_px` — пытались
-    // сэкономить на текстуре, но эффект был обратный. Ключ кеша
-    // ImageProvider включает cacheWidth, поэтому вёьвер получал
-    // ОТДЕЛЬНЫЙ кеш-ключ от грид-тамбнейла (`_Thumb` использует
-    // `Image.memory(bytes)` без cacheWidth) и от прекеша в
-    // `_BdShotsGridState._precacheAll`. Результат: на каждый вход
-    // в вьювер и на каждый свайп страницы PageView стартовал
-    // свежий декод ПОЛНОГО PNG’а — это и было видимым «лагом на
-    // свайпе». К Hero-флайту: shuttleBuilder строит свой `Image.memory`
-    // без cacheWidth (там кэш попадает из грида), но destination был
-    // всё равно мимо кеша — юзер видел «зацеп» на стыке полёта.
-    //
-    // Сейчас cacheWidth НЕ задаём: все три точки (грид-тамбнейл,
-    // Hero шаттл, destination вьювера) используют `MemoryImage(bytes)`
-    // с одинаковым ключом. Прекеш в `_BdShotsGridState._precacheAll`
-    // по этому же ключу уже декодирует все скрины при открытии
-    // деталей бага → свайпы по фоткам идут из кеша, без повторных
-    // декодов.
+    // Фикс — `cacheWidth` подсказывает движку декодировать картинку
+    // сразу в размер вьюпорта (учитывая devicePixelRatio). Декод
+    // быстрее, текстура меньше, GPU upload тоже легче. Качество визуально
+    // не страдает: мы всё равно не делаем зум.
+    final media = MediaQuery.of(context);
+    final cacheW = (media.size.width * media.devicePixelRatio).round();
     return ClipRRect(
       borderRadius: BorderRadius.circular(radius),
       child: Image.memory(
@@ -752,6 +743,7 @@ class _RoundedShot extends StatelessWidget {
         fit: fit,
         filterQuality: FilterQuality.medium,
         gaplessPlayback: true,
+        cacheWidth: cacheW,
       ),
     );
   }
@@ -837,23 +829,13 @@ class ShotsViewer extends StatefulWidget {
 
 class _ShotsViewerState extends State<ShotsViewer>
     with TickerProviderStateMixin {
-  // Индекс текущей страницы. Раньше был `int + setState` — на каждый
-  // свайп PageView'а вызывался setState, который ребилдил весь
-  // три слоя вьювера: backdrop, PageView и счётчик. PageView
-  // пересобирался — видимых эффектов не было, но лишние
-  // build'ы в момент флинга. С ValueNotifier ребилдится ТОЛЬКО
-  // счётчик "i / N" под ValueListenableBuilder<int>.
-  late final ValueNotifier<int> _indexV =
-      ValueNotifier<int>(widget.initialIndex);
+  late int _index = widget.initialIndex;
   late final PageController _pc =
       PageController(initialPage: widget.initialIndex);
-
-  // Стабильные ImageProvider'ы по индексу скрина. Нужны для вызовов
-  // `precacheImage` вокруг текущей страницы PageView. Ключ
-  // идентичен тому, что использует `Image.memory(bytes)` в PageView и
-  // в Hero shuttle — тот же `MemoryImage(bytes)`, тот же raster в кеше.
-  late final List<MemoryImage> _providers =
-      widget.shots.map((b) => MemoryImage(b)).toList(growable: false);
+  // Защита от двойного шедулинга precache. Если несколько фреймов
+  // подряд триггерят didChangeDependencies (например, при первом
+  // открытии экрана), мы хотим один post-frame прогрев на (init).
+  bool _initialPrecacheScheduled = false;
   // ValueNotifier вместо обычного поля + setState — без него каждый
   // pixel движения пальца пересобирал бы всё дерево виджетов вьюера
   // (PageView, Hero, ColoredBox, счётчик и т.д.). Через notifier
@@ -903,24 +885,49 @@ class _ShotsViewerState extends State<ShotsViewer>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    // После первого build'а (когда контекст уже вырос) прекешируем
-    // соседние страницы. Это страховка на случай, если
-    // `_BdShotsGridState._precacheAll` ещё не успел завершиться, или
-    // если скрины вылетели из LRU после других виджетов.
-    _precacheAround(_indexV.value);
+    // Первый прогрев — после первого фрейма, когда MediaQuery уже доступна
+    // и context привязан к дереву. В onPageChanged будем дёргать сразу
+    // (там мы уже после первого билда — MediaQuery в наличии).
+    if (_initialPrecacheScheduled) return;
+    _initialPrecacheScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _precacheAround(_index);
+    });
   }
 
-  /// Прекеширует текущую + две соседние страницы. Повторный вызов для
-  /// уже декодированных картинок бесплатен — ImageCache LRU всё равно
-  /// режет промахи и обновляет timestamp «recently used» для соседей,
-  /// чтобы их не выбило первыми.
-  void _precacheAround(int i) {
+  /// Прогревает Flutter image cache для текущей и СОСЕДНИХ страниц
+  /// PageView'а с тем же `cacheWidth`, который использует `_RoundedShot`.
+  ///
+  /// Почему именно `ResizeImage(MemoryImage(bytes), width: cacheW)`:
+  /// `Image.memory(bytes, cacheWidth: w)` под капотом превращается в
+  /// `ResizeImage.resizeIfNeeded(w, null, MemoryImage(bytes))`, и его
+  /// cache key в `ImageCache` — это пара `(ResizeImage, width, height,
+  /// policy)`. Если прогрев и фактическая отрисовка использовали
+  /// провайдеры с РАЗНЫМИ ключами (например, `MemoryImage(bytes)` против
+  /// `Image.memory(bytes, cacheWidth: w)`) — это два разных entry, и
+  /// прогрев не помогает: при свайпе в новую страницу декод стартует
+  /// прямо в кадре свайпа, и юзер видит подёргивание.
+  ///
+  /// Декодирование выполняется на отдельном раннер-изоляте Skia, но
+  /// диспатч/декодинг даёт фрейм-задержку до первого raster'а. Заранее
+  /// прогревая ±1 страницу, мы гарантируем что к моменту свайпа
+  /// картинка уже декодирована и фактическая отрисовка ничего нового
+  /// в UI-тред не приносит.
+  void _precacheAround(int center) {
     if (!mounted) return;
-    for (final j in <int>[i, i - 1, i + 1, i + 2, i - 2]) {
-      if (j < 0 || j >= _providers.length) continue;
-      // ignore: discarded_futures — fire-and-forget, в ImageCache результат попадёт
-      //                              автоматически; ожидать ничего не надо.
-      precacheImage(_providers[j], context);
+    final media = MediaQuery.of(context);
+    final cacheW = (media.size.width * media.devicePixelRatio).round();
+    for (final i in <int>[center - 1, center, center + 1]) {
+      if (i < 0 || i >= widget.shots.length) continue;
+      final provider = ResizeImage(
+        MemoryImage(widget.shots[i]),
+        width: cacheW,
+      );
+      // .catchError(_) на случай если декод упал (битые байты) —
+      // это не должно валить вьюер; страница покажет онэррор-плейсхолдер
+      // через стандартный image-error handling.
+      precacheImage(provider, context).catchError((_) {});
     }
   }
 
@@ -949,7 +956,6 @@ class _ShotsViewerState extends State<ShotsViewer>
     _snapCtl.dispose();
     _pc.dispose();
     _dragV.dispose();
-    _indexV.dispose();
     super.dispose();
   }
 
@@ -1027,25 +1033,13 @@ class _ShotsViewerState extends State<ShotsViewer>
             child: PageView.builder(
               controller: _pc,
               itemCount: widget.shots.length,
-              // КЛЮЧЕВОЕ ДЛЯ СВАЙПА: PageView по умолчанию ДЕМОНТИРУЕТ
-              // соседние страницы как только они уходят за viewport.
-              // С allowImplicitScrolling=true PageView ДОПОЛНИТЕЛЬНО
-              // держит соседа (i+1 при движении вправо, i-1 влево) в
-              // живом виджет-дереве даже когда он не виден. Результат:
-              // ImageStreamListener внутри Image-widget'а НЕ отпускается,
-              // декодированный raster хранится в ImageCache, следующий
-              // свайп показывает страницу мгновенно без attach/decode.
-              allowImplicitScrolling: true,
               onPageChanged: (i) {
-                // setState() НЕ вызываем — _indexV под своим
-                // ValueListenableBuilder, перерисует только счётчик
-                // "i / N". PageView не пересобирается.
-                _indexV.value = i;
+                setState(() => _index = i);
                 // Каждое листание — снова показываем счётчик и
                 // перезапускаем таймер скрытия.
                 _bumpVisibility();
-                // Прекешируем соседей новой страницы. При быстром свайпе
-                // вперёд всегда будет готова страница i+1, при свайпе назад — i-1.
+                // Прогреваем соседей новой текущей страницы — чтобы
+                // следующий свайп тоже был без декод-джанка.
                 _precacheAround(i);
               },
               itemBuilder: (_, i) {
@@ -1153,40 +1147,32 @@ class _ShotsViewerState extends State<ShotsViewer>
               left: 0,
               right: 0,
               child: IgnorePointer(
-                // Счётчик зависит от _indexV и _dragV. Вложенные
-                // ValueListenableBuilder — оба ребилдят ТОЛЬКО этот
-                // поддерево (текст + Opacity), никаких setState на весь вьювер.
-                child: ValueListenableBuilder<int>(
-                  valueListenable: _indexV,
-                  builder: (_, idx, __) {
-                    return ValueListenableBuilder<Offset>(
-                      valueListenable: _dragV,
-                      child: Center(
-                        child: _ViewerPill(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 14, vertical: 8),
-                          circle: false,
-                          child: Text(
-                            '${idx + 1} / ${widget.shots.length}',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
+                child: ValueListenableBuilder<Offset>(
+                  valueListenable: _dragV,
+                  child: Center(
+                    child: _ViewerPill(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 8),
+                      circle: false,
+                      child: Text(
+                        '${_index + 1} / ${widget.shots.length}',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
-                      builder: (_, drag, child) {
-                        final t = _dragProgress(drag, size);
-                        return AnimatedBuilder(
-                          animation: _counterCtl,
-                          builder: (_, __) {
-                            final op = (_counterCtl.value * (1 - t))
-                                .clamp(0.0, 1.0);
-                            if (op == 0) return const SizedBox.shrink();
-                            return Opacity(opacity: op, child: child);
-                          },
-                        );
+                    ),
+                  ),
+                  builder: (_, drag, child) {
+                    final t = _dragProgress(drag, size);
+                    return AnimatedBuilder(
+                      animation: _counterCtl,
+                      builder: (_, __) {
+                        final op = (_counterCtl.value * (1 - t))
+                            .clamp(0.0, 1.0);
+                        if (op == 0) return const SizedBox.shrink();
+                        return Opacity(opacity: op, child: child);
                       },
                     );
                   },
