@@ -18,6 +18,17 @@ Future<void> main() async {
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge,
       overlays: SystemUiOverlay.values);
   _applyOverlayStyle(AppState.I.isDark);
+  // Увеличиваем глобальный ImageCache: дефолт 100 МБ / 1000 объектов.
+  // Скриншоты багов — это full-res PNG'и (~1080×2400×4 ≈ 10МБ растровой
+  // копии каждый). При багрепорте с 10 скринами кэша по дефолту
+  // впритык хватает на одну сессию, а как только юзер открывает второй
+  // багрепорт — LRU начинает evict'ить и шторм декодеров возвращается
+  // (это и было «лагает свайпанье скринов» при возврате к ранее
+  // просмотренным). 256МБ хватает на ~25 шотов и даёт большой запас.
+  // По объектам 2000 — потому что приложение ещё держит SVG-иконки и
+  // мелкие миниатюры в фото-пикере (несколько сотен MemoryImage'ей).
+  PaintingBinding.instance.imageCache.maximumSizeBytes = 256 << 20;
+  PaintingBinding.instance.imageCache.maximumSize = 2000;
   // Параллельно: грузим стейт и прогреваем кэш SVG, чтобы иконки рисовались
   // мгновенно во всех экранах без «лагов» при первом показе.
   await Future.wait<void>([
