@@ -815,23 +815,37 @@ class _PhotoCellState extends State<_PhotoCell> {
           child: Stack(
             fit: StackFit.expand,
             children: [
-              // Плейсхолдер + (если готово) картинка как BoxDecoration
-              // одного контейнера. Один draw call.
-              AnimatedContainer(
-                duration: const Duration(milliseconds: 240),
-                curve: Curves.easeOutCubic,
+              // Плейсхолдер: ВСЕГДА статичный Container, чтобы переход
+              // placeholder→image не ехал через дорогой DecorationTween.
+              // Раньше тут стоял AnimatedContainer(duration:240мс) с
+              // image внутри BoxDecoration — Flutter лерпил BoxDecoration
+              // от «без image» к «с image» 240мс, и каждый кадр
+              // пересоздавал BoxDecoration с DecorationImagePainter.
+              // Визуально это и есть «лаг»: новая фотка проявлялась
+              // в течение 240мс и в это же время на каждый rebuild
+              // соседних ячеек (например при выборе) пересчитывался
+              // DecorationTween по всем видимым ячейкам.
+              //
+              // Сейчас: один Container с плейсхолдером всегда, поверх
+              // него — RawImage через `Image(image:_provider!)`, который
+              // появляется мгновенно из ImageCache (декод уже прошёл в
+              // precacheImage). Никаких tween, никаких saveLayer'ов.
+              Container(
                 decoration: BoxDecoration(
                   color: placeholderColor,
                   borderRadius: BorderRadius.circular(14),
-                  image: hasImage
-                      ? DecorationImage(
-                          image: _provider!,
-                          fit: BoxFit.cover,
-                          filterQuality: FilterQuality.medium,
-                        )
-                      : null,
                 ),
               ),
+              if (hasImage)
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(14),
+                  child: Image(
+                    image: _provider!,
+                    fit: BoxFit.cover,
+                    filterQuality: FilterQuality.medium,
+                    gaplessPlayback: true,
+                  ),
+                ),
               // Затемнение появляется только если selected. Без
               // постоянного AnimatedOpacity-виджета в дереве.
               if (selected)

@@ -837,7 +837,14 @@ class ShotsViewer extends StatefulWidget {
 
 class _ShotsViewerState extends State<ShotsViewer>
     with TickerProviderStateMixin {
-  late int _index = widget.initialIndex;
+  // Индекс текущей страницы. Раньше был `int + setState` — на каждый
+  // свайп PageView'а вызывался setState, который ребилдил весь
+  // три слоя вьювера: backdrop, PageView и счётчик. PageView
+  // пересобирался — видимых эффектов не было, но лишние
+  // build'ы в момент флинга. С ValueNotifier ребилдится ТОЛЬКО
+  // счётчик "i / N" под ValueListenableBuilder<int>.
+  late final ValueNotifier<int> _indexV =
+      ValueNotifier<int>(widget.initialIndex);
   late final PageController _pc =
       PageController(initialPage: widget.initialIndex);
 
@@ -900,7 +907,7 @@ class _ShotsViewerState extends State<ShotsViewer>
     // соседние страницы. Это страховка на случай, если
     // `_BdShotsGridState._precacheAll` ещё не успел завершиться, или
     // если скрины вылетели из LRU после других виджетов.
-    _precacheAround(_index);
+    _precacheAround(_indexV.value);
   }
 
   /// Прекеширует текущую + две соседние страницы. Повторный вызов для
@@ -942,6 +949,7 @@ class _ShotsViewerState extends State<ShotsViewer>
     _snapCtl.dispose();
     _pc.dispose();
     _dragV.dispose();
+    _indexV.dispose();
     super.dispose();
   }
 
@@ -1019,8 +1027,20 @@ class _ShotsViewerState extends State<ShotsViewer>
             child: PageView.builder(
               controller: _pc,
               itemCount: widget.shots.length,
+              // КЛЮЧЕВОЕ ДЛЯ СВАЙПА: PageView по умолчанию ДЕМОНТИРУЕТ
+              // соседние страницы как только они уходят за viewport.
+              // С allowImplicitScrolling=true PageView ДОПОЛНИТЕЛЬНО
+              // держит соседа (i+1 при движении вправо, i-1 влево) в
+              // живом виджет-дереве даже когда он не виден. Результат:
+              // ImageStreamListener внутри Image-widget'а НЕ отпускается,
+              // декодированный raster хранится в ImageCache, следующий
+              // свайп показывает страницу мгновенно без attach/decode.
+              allowImplicitScrolling: true,
               onPageChanged: (i) {
-                setState(() => _index = i);
+                // setState() НЕ вызываем — _indexV под своим
+                // ValueListenableBuilder, перерисует только счётчик
+                // "i / N". PageView не пересобирается.
+                _indexV.value = i;
                 // Каждое листание — снова показываем счётчик и
                 // перезапускаем таймер скрытия.
                 _bumpVisibility();
@@ -1133,32 +1153,40 @@ class _ShotsViewerState extends State<ShotsViewer>
               left: 0,
               right: 0,
               child: IgnorePointer(
-                child: ValueListenableBuilder<Offset>(
-                  valueListenable: _dragV,
-                  child: Center(
-                    child: _ViewerPill(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 14, vertical: 8),
-                      circle: false,
-                      child: Text(
-                        '${_index + 1} / ${widget.shots.length}',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
+                // Счётчик зависит от _indexV и _dragV. Вложенные
+                // ValueListenableBuilder — оба ребилдят ТОЛЬКО этот
+                // поддерево (текст + Opacity), никаких setState на весь вьювер.
+                child: ValueListenableBuilder<int>(
+                  valueListenable: _indexV,
+                  builder: (_, idx, __) {
+                    return ValueListenableBuilder<Offset>(
+                      valueListenable: _dragV,
+                      child: Center(
+                        child: _ViewerPill(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 8),
+                          circle: false,
+                          child: Text(
+                            '${idx + 1} / ${widget.shots.length}',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
                         ),
                       ),
-                    ),
-                  ),
-                  builder: (_, drag, child) {
-                    final t = _dragProgress(drag, size);
-                    return AnimatedBuilder(
-                      animation: _counterCtl,
-                      builder: (_, __) {
-                        final op = (_counterCtl.value * (1 - t))
-                            .clamp(0.0, 1.0);
-                        if (op == 0) return const SizedBox.shrink();
-                        return Opacity(opacity: op, child: child);
+                      builder: (_, drag, child) {
+                        final t = _dragProgress(drag, size);
+                        return AnimatedBuilder(
+                          animation: _counterCtl,
+                          builder: (_, __) {
+                            final op = (_counterCtl.value * (1 - t))
+                                .clamp(0.0, 1.0);
+                            if (op == 0) return const SizedBox.shrink();
+                            return Opacity(opacity: op, child: child);
+                          },
+                        );
                       },
                     );
                   },
