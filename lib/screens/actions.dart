@@ -142,6 +142,18 @@ class _ActionsScreenState extends State<ActionsScreen>
         _manualLoading = true;
       }
     });
+    // На быстром интернете GitHub отвечает за 100-200ms. Если просто
+    // снять «Обновление…» сразу после возврата API — заголовок
+    // моргнёт «Идёт сборка → Обновление… → Идёт сборка» за полсекунды,
+    // что выглядит как баг (юзер: «при нажатии на кнопку обновить,
+    // надпись меняется на обновление, а потом резко почему-то
+    // выскакивает назад»). Поэтому для manual=true гарантируем, что
+    // «Обновление…» провисит минимум 700ms — достаточно, чтобы
+    // пользователь успел его прочитать и понять, что обновление
+    // действительно запустилось.
+    final Future<void>? minHold = manual
+        ? Future<void>.delayed(const Duration(milliseconds: 700))
+        : null;
     try {
       // Лимит 20 последних запусков — по просьбе пользователя. Раньше
       // тянулось дефолтно 30, на «болтливых» репо длинный список бил
@@ -152,10 +164,12 @@ class _ActionsScreenState extends State<ActionsScreen>
       // необходимости пришлёт уведомления о смене статуса. И только
       // потом обновляем cachedRuns (иначе трекер не увидит «дельты»).
       AppState.I.observeRuns(runs, repoFullName: repo.fullName);
+      // Применяем данные сразу (карточки могут перестроиться), а
+      // флаг manualLoading снимаем уже после minHold ниже — чтобы
+      // заголовок «Обновление…» подержался корректное время.
       setState(() {
         _runs = runs;
         _loading = false;
-        _manualLoading = false;
         _error = null;
         _lastFetchAt = DateTime.now();
       });
@@ -166,8 +180,12 @@ class _ActionsScreenState extends State<ActionsScreen>
       setState(() {
         _error = e.toString();
         _loading = false;
-        _manualLoading = false;
       });
+    } finally {
+      if (minHold != null) await minHold;
+      if (mounted && _manualLoading) {
+        setState(() => _manualLoading = false);
+      }
     }
   }
 
@@ -318,13 +336,22 @@ class _ActionsScreenState extends State<ActionsScreen>
         // RepaintBoundary вокруг карточки рана — даже когда обновляется
         // живой meta-лейбл (раз в секунду), Flutter не будет
         // перерисовывать соседние карточки в списке.
+        // AppearOnMount: фейд + лёгкий подъём при первой постройке;
+        // задержка по индексу даёт каскад сверху вниз. У AppearOnMount
+        // ключ ValueKey(run.id) — если запуск переехал в списке после
+        // ребилда, состояние анимации сохранится за карточкой, а не
+        // запустится заново.
         return RepaintBoundary(
-          child: Padding(
-            padding: const EdgeInsets.only(bottom: 10),
-            child: _RunCard(
-              run: run,
-              onTap: () => pushSlide(context, RunDetailScreen(run: run)),
-              onRefresh: _refresh,
+          child: AppearOnMount(
+            key: ValueKey('appear_run_${run.id}'),
+            delay: Duration(milliseconds: (i * 35).clamp(0, 280)),
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: _RunCard(
+                run: run,
+                onTap: () => pushSlide(context, RunDetailScreen(run: run)),
+                onRefresh: _refresh,
+              ),
             ),
           ),
         );
@@ -510,46 +537,32 @@ class _LiveHeadState extends State<_LiveHead>
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                // БОЛЬШОЙ заголовок: Actions / Обновление… / Идёт сборка
-                // / Ошибка. AnimatedSwitcher делает плавную cross-fade
-                // + горизонтальный size-tween. ВАЖНО: «Обновление…»
-                // появляется только при manualLoading=true, поэтому
-                // фоновый автополл каждые 4с заголовок не дёргает.
-                AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 340),
-                  switchInCurve: Curves.easeOutCubic,
-                  switchOutCurve: Curves.easeInCubic,
-                  layoutBuilder: (currentChild, previousChildren) => Stack(
-                    alignment: Alignment.centerLeft,
-                    children: [
-                      ...previousChildren,
-                      if (currentChild != null) currentChild,
-                    ],
-                  ),
-                  transitionBuilder: (child, anim) {
-                    return FadeTransition(
-                      opacity: anim,
-                      child: SizeTransition(
-                        sizeFactor: anim,
-                        axis: Axis.horizontal,
-                        axisAlignment: -1,
-                        child: child,
-                      ),
-                    );
-                  },
-                  child: Text(
-                    _titleText(),
-                    key: ValueKey<String>(_titleText()),
-                    style: TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: -.4,
-                      color: pal.text,
-                      height: 1.15,
-                    ),
-                    maxLines: 1,
-                    softWrap: false,
-                    overflow: TextOverflow.fade,
+                // БОЛЬШОЙ заголовок: Actions / Обновление… / Идёт
+                // сборка / Ошибка.
+                //
+                // Раньше тут был AnimatedSwitcher с FadeTransition +
+                // SizeTransition(axis: horizontal). На первом
+                // build'е это давало неприятный «pop-in»: заголовок
+                // рос от width=0, opacity=0 за 340ms — пользователь
+                // видел только точку статуса, а сам тайтл «выскакивал»
+                // спустя долю секунды. Юзер жаловался: «при первом
+                // заходе зоголвка сначала нет, только точка эта, а
+                // потом резко он появляется».
+                //
+                // Используем кастомный _FadeOnChangeText: первый рендер
+                // моментальный (нет анимации), все следующие смены
+                // строки плавно cross-fade'ятся без SizeTransition.
+                // Никакого «pop-in», и горизонтальная ширина не
+                // прыгает (текст просто переключается).
+                _FadeOnChangeText(
+                  text: _titleText(),
+                  duration: const Duration(milliseconds: 220),
+                  style: TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: -.4,
+                    color: pal.text,
+                    height: 1.15,
                   ),
                 ),
                 const SizedBox(height: 6),
@@ -580,39 +593,15 @@ class _LiveHeadState extends State<_LiveHead>
                     ),
                     const SizedBox(width: 7),
                     // Префикс ("Обновление…" / "Ошибка" / "3 активных • ").
-                    // Меняется редко — оборачиваем в AnimatedSwitcher
-                    // с cross-fade. Не используем RisingText, потому
-                    // что префикс это не цифра, а название статуса.
-                    AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 260),
-                      switchInCurve: Curves.easeOutCubic,
-                      switchOutCurve: Curves.easeInCubic,
-                      transitionBuilder: (child, anim) => FadeTransition(
-                        opacity: anim,
-                        child: SizeTransition(
-                          sizeFactor: anim,
-                          axis: Axis.horizontal,
-                          axisAlignment: -1,
-                          child: child,
-                        ),
+                    // Меняется редко. Тоже выводим через _FadeOnChangeText
+                    // — первая строка появляется моментально, смены
+                    // плавно cross-fade'ятся без SizeTransition.
+                    if (_statusPrefix().isNotEmpty)
+                      _FadeOnChangeText(
+                        text: _statusPrefix(),
+                        duration: const Duration(milliseconds: 220),
+                        style: subStyle,
                       ),
-                      layoutBuilder:
-                          (currentChild, previousChildren) => Stack(
-                        alignment: Alignment.centerLeft,
-                        children: [
-                          ...previousChildren,
-                          if (currentChild != null) currentChild,
-                        ],
-                      ),
-                      child: _statusPrefix().isEmpty
-                          ? const SizedBox.shrink(key: ValueKey('empty'))
-                          : Text(
-                              _statusPrefix(),
-                              key: ValueKey<String>(_statusPrefix()),
-                              maxLines: 1,
-                              softWrap: false,
-                            ),
-                    ),
                     // Живой «обновлено Nс назад» — RisingText ребилдит
                     // только сам себя, тикает раз в секунду через
                     // глобальный _liveSecondTick, и каждый раз когда
@@ -1343,3 +1332,109 @@ String _timeAgo(String iso) {
     return '';
   }
 }
+
+/// [_FadeOnChangeText] — replacement for AnimatedSwitcher вокруг Text:
+/// первый билд показывает текст моментально (без fade-in от opacity 0),
+/// последующие смены строки плавно cross-fade'ятся за [duration]. Без
+/// SizeTransition — горизонтальная ширина не схлопывается до 0.
+///
+/// Зачем это: AnimatedSwitcher по умолчанию анимирует и первый child.
+/// На холодном входе на экран Actions заголовок «Идёт сборка» / «Actions»
+/// выезжал из width=0, opacity=0 и пользователь видел только статус-точку
+/// сначала, потом — резкое появление текста. Этот виджет первое
+/// значение выводит без анимации, и только при последующих сменах
+/// делает плавный fade.
+class _FadeOnChangeText extends StatefulWidget {
+  final String text;
+  final TextStyle? style;
+  final Duration duration;
+  const _FadeOnChangeText({
+    required this.text,
+    this.style,
+    this.duration = const Duration(milliseconds: 220),
+  });
+
+  @override
+  State<_FadeOnChangeText> createState() => _FadeOnChangeTextState();
+}
+
+class _FadeOnChangeTextState extends State<_FadeOnChangeText>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  late String _current;
+  String? _previous;
+
+  @override
+  void initState() {
+    super.initState();
+    _current = widget.text;
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: widget.duration,
+      value: 1.0,
+    );
+  }
+
+  @override
+  void didUpdateWidget(covariant _FadeOnChangeText old) {
+    super.didUpdateWidget(old);
+    if (old.duration != widget.duration) _ctrl.duration = widget.duration;
+    if (old.text != widget.text) {
+      _previous = _current;
+      _current = widget.text;
+      _ctrl.forward(from: 0);
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (_, __) {
+        final t = _ctrl.value;
+        if (t >= 1.0 || _previous == null) {
+          return Text(
+            _current,
+            style: widget.style,
+            maxLines: 1,
+            softWrap: false,
+            overflow: TextOverflow.fade,
+          );
+        }
+        return Stack(
+          alignment: AlignmentDirectional.centerStart,
+          clipBehavior: Clip.none,
+          children: [
+            Opacity(
+              opacity: 1 - t,
+              child: Text(
+                _previous!,
+                style: widget.style,
+                maxLines: 1,
+                softWrap: false,
+                overflow: TextOverflow.fade,
+              ),
+            ),
+            Opacity(
+              opacity: t,
+              child: Text(
+                _current,
+                style: widget.style,
+                maxLines: 1,
+                softWrap: false,
+                overflow: TextOverflow.fade,
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+

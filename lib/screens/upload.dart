@@ -1,8 +1,8 @@
 import 'dart:typed_data';
 import 'package:archive/archive.dart';
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import '../widgets/m3_loading.dart';
+import '../widgets/file_picker_sheet.dart';
 
 import '../iconify.dart';
 import '../navigation.dart';
@@ -100,25 +100,22 @@ class _UploadScreenState extends State<UploadScreen> {
       _pickError = null;
     });
     try {
-      final res = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: ['zip'],
-        withData: true,
+      // Юзер просил собственную панель выбора файлов вместо системного
+      // Android-пикера. Открываем bottom-sheet [pickFileBottomSheet]
+      // (см. lib/widgets/file_picker_sheet.dart). Внутри — навигация
+      // по папкам (Download / Documents / DCIM / папка приложения),
+      // фильтрация только .zip, и fallback на системный picker через
+      // кнопку «Системная панель», если scoped storage не пускает
+      // напрямую в Downloads.
+      final picked = await pickFileBottomSheet(
+        context,
+        allowedExtensions: const ['zip'],
       );
-      if (res == null || res.files.isEmpty) {
+      if (picked == null) {
         setState(() => _picking = false);
         return;
       }
-      final f = res.files.first;
-      final bytes = f.bytes;
-      if (bytes == null) {
-        setState(() {
-          _picking = false;
-          _pickError =
-              'Не удалось прочитать файл. Попробуйте другой ZIP или путь.';
-        });
-        return;
-      }
+      final bytes = picked.bytes;
       final archive = ZipDecoder().decodeBytes(bytes);
       final files = <String, Uint8List>{};
       for (final entry in archive) {
@@ -137,10 +134,10 @@ class _UploadScreenState extends State<UploadScreen> {
       // strip common single root prefix if any
       _stripCommonRoot(files);
       AppState.I.stagedFiles = files;
-      AppState.I.stagedZipName = f.name;
+      AppState.I.stagedZipName = picked.name;
       AppState.I.touch();
       setState(() {
-        _zipName = f.name;
+        _zipName = picked.name;
         _picking = false;
       });
     } catch (e) {

@@ -351,10 +351,16 @@ class RisingText extends StatefulWidget {
     super.key,
     required this.text,
     this.style,
-    this.duration = const Duration(milliseconds: 360),
+    this.duration = const Duration(milliseconds: 320),
     this.curve = Curves.easeOutCubic,
     this.textAlign = TextAlign.start,
-    this.slideFraction = 0.6,
+    // 0.35 (а не 0.6, как было раньше) — старый текст уезжает мягче,
+    // буквально на треть высоты строки. Большая slideFraction в связке
+    // с ClipRect давала «бритвенный» срез сверху, юзер жаловался:
+    // «когда растворяется ещё сверху обрезвается чем-то, это ужасно».
+    // Сейчас ClipRect убран и slide маленький — текст красиво
+    // приподнимается и тает, не «спотыкаясь» о невидимую линию.
+    this.slideFraction = 0.35,
   });
 
   @override
@@ -418,57 +424,147 @@ class _RisingTextState extends State<RisingText>
             softWrap: false,
           );
         }
-        return ClipRect(
-          child: Stack(
-            alignment: widget.textAlign == TextAlign.end
-                ? AlignmentDirectional.centerEnd
-                : AlignmentDirectional.centerStart,
-            children: [
-              // Невидимый «распорка»: гарантирует, что Stack займёт
-              // ширину/высоту самой широкой из двух строк, иначе
-              // Transform.translate выходит за границы layout'а
-              // и текст «обрезается» соседним виджетом.
-              Opacity(
-                opacity: 0,
+        // Без ClipRect: раньше Stack оборачивался в ClipRect, и старый
+        // текст при slide-вверх «упирался» в верхнюю кромку Stack'a и
+        // обрезался ножом по самой яркой части. Теперь slide маленький
+        // (~0.35 * fontSize), overflow уходит в свободное пространство
+        // над/под status-строкой (там и так пустое место у нас по
+        // дизайну), и пользователь видит мягкий лифт + растворение,
+        // без «срезания» сверху.
+        //
+        // Кривая opacity у уходящего текста — ease-out-quad: к моменту
+        // когда он уехал заметно вверх, он уже почти прозрачный, так
+        // что overflow визуально не выходит за пределы своей строки.
+        final fadeOut = (1 - t) * (1 - t);
+        final fadeIn = t;
+        return Stack(
+          alignment: widget.textAlign == TextAlign.end
+              ? AlignmentDirectional.centerEnd
+              : AlignmentDirectional.centerStart,
+          clipBehavior: Clip.none,
+          children: [
+            // Невидимая «распорка»: гарантирует, что Stack займёт
+            // ширину/высоту самой широкой из двух строк, иначе
+            // Transform.translate выходит за границы layout'а
+            // и текст «обрезается» соседним виджетом.
+            Opacity(
+              opacity: 0,
+              child: Text(
+                _previous!.length >= _current.length ? _previous! : _current,
+                style: style,
+                maxLines: 1,
+                softWrap: false,
+              ),
+            ),
+            // Старый текст уезжает вверх и тает (быстрее).
+            Transform.translate(
+              offset: Offset(0, -slide * t),
+              child: Opacity(
+                opacity: fadeOut,
                 child: Text(
-                  _previous!.length >= _current.length ? _previous! : _current,
+                  _previous!,
                   style: style,
+                  textAlign: widget.textAlign,
                   maxLines: 1,
                   softWrap: false,
                 ),
               ),
-              // Старый текст уезжает вверх и тает.
-              Transform.translate(
-                offset: Offset(0, -slide * t),
-                child: Opacity(
-                  opacity: 1 - t,
-                  child: Text(
-                    _previous!,
-                    style: style,
-                    textAlign: widget.textAlign,
-                    maxLines: 1,
-                    softWrap: false,
-                  ),
+            ),
+            // Новый текст приезжает снизу и проявляется.
+            Transform.translate(
+              offset: Offset(0, slide * (1 - t)),
+              child: Opacity(
+                opacity: fadeIn,
+                child: Text(
+                  _current,
+                  style: style,
+                  textAlign: widget.textAlign,
+                  maxLines: 1,
+                  softWrap: false,
                 ),
               ),
-              // Новый текст приезжает снизу и проявляется.
-              Transform.translate(
-                offset: Offset(0, slide * (1 - t)),
-                child: Opacity(
-                  opacity: t,
-                  child: Text(
-                    _current,
-                    style: style,
-                    textAlign: widget.textAlign,
-                    maxLines: 1,
-                    softWrap: false,
-                  ),
-                ),
-              ),
-            ],
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+/// [AppearOnMount] — оборачивает child и при первом монтировании
+/// плавно выводит его на экран: short fade-in (0→1) + лёгкий
+/// slide вверх на ~12px. Делается строго один раз — при следующих
+/// rebuild'ах виджет уже находится в финальном состоянии.
+///
+/// Зачем: юзер просил, чтобы карточки в списках Actions/Repos
+/// не «выскакивали» резко при первой загрузке. С этим виджетом
+/// первый набор карточек появляется каскадом: индекс N стартует
+/// анимацию с задержкой `staggerMs * N` (по умолчанию 35мс), что
+/// даёт волну сверху вниз ≈ 200мс для первых 5-6 элементов и
+/// быстрое появление всего остального.
+class AppearOnMount extends StatefulWidget {
+  final Widget child;
+  /// Задержка перед стартом анимации (для шахматной/каскадной
+  /// раздачи в списке). По дефолту — 0.
+  final Duration delay;
+  /// Длительность fade+slide.
+  final Duration duration;
+  /// На сколько пикселей карточка приподнимается снизу.
+  final double slideY;
+  const AppearOnMount({
+    super.key,
+    required this.child,
+    this.delay = Duration.zero,
+    this.duration = const Duration(milliseconds: 320),
+    this.slideY = 12,
+  });
+
+  @override
+  State<AppearOnMount> createState() => _AppearOnMountState();
+}
+
+class _AppearOnMountState extends State<AppearOnMount>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl = AnimationController(
+    vsync: this,
+    duration: widget.duration,
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    // Задержка через Future.delayed: легче чем второй контроллер.
+    // Если виджет за это время дисmount'ился — пропускаем forward.
+    Future.delayed(widget.delay, () {
+      if (mounted) _ctrl.forward();
+    });
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final curved = CurvedAnimation(parent: _ctrl, curve: Curves.easeOutCubic);
+    return AnimatedBuilder(
+      animation: curved,
+      builder: (_, child) {
+        final t = curved.value;
+        // На завершении — отдаём чистый child без обёрток (нулевой
+        // оверхед в ListView'ах после первой анимации).
+        if (t >= 1.0) return child!;
+        return Opacity(
+          opacity: t,
+          child: Transform.translate(
+            offset: Offset(0, widget.slideY * (1 - t)),
+            child: child,
           ),
         );
       },
+      child: widget.child,
     );
   }
 }

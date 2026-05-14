@@ -236,31 +236,41 @@ class _ReposScreenState extends State<ReposScreen> {
                       final r = list[i];
                       final isActive =
                           AppState.I.activeRepo?.fullName == r.fullName;
-                      return _RepoTile(
-                        repo: r,
-                        selected: isActive,
-                        onTap: () async {
-                          if (widget.picker) {
+                      // AppearOnMount каскадно проявляет карточки
+                      // репо при первой постройке. Ключ по fullName
+                      // — анимация запускается только один раз для
+                      // каждого репо (при ребилдах из-за смены
+                      // активного репо состояние сохраняется).
+                      return AppearOnMount(
+                        key: ValueKey('appear_repo_${r.fullName}'),
+                        delay: Duration(
+                            milliseconds: (i * 30).clamp(0, 240)),
+                        child: _RepoTile(
+                          repo: r,
+                          selected: isActive,
+                          onTap: () async {
+                            if (widget.picker) {
+                              await AppState.I.setActiveRepo(r);
+                              if (!context.mounted) return;
+                              Navigator.of(context).pop();
+                            } else {
+                              pushSlide(
+                                  context, RepoDetailScreen(repo: r));
+                            }
+                          },
+                          onSelectTap: () async {
+                            // Баг n1738 / n2833: в разделе «Репозитории» и
+                            // «Мои репозитории» любой репо можно отметить
+                            // галочкой — это делает его активным во всём приложении.
                             await AppState.I.setActiveRepo(r);
                             if (!context.mounted) return;
-                            Navigator.of(context).pop();
-                          } else {
-                            pushSlide(
-                                context, RepoDetailScreen(repo: r));
-                          }
-                        },
-                        onSelectTap: () async {
-                          // Баг n1738 / n2833: в разделе «Репозитории» и
-                          // «Мои репозитории» любой репо можно отметить
-                          // галочкой — это делает его активным во всём приложении.
-                          await AppState.I.setActiveRepo(r);
-                          if (!context.mounted) return;
-                          if (widget.picker) {
-                            Navigator.of(context).pop();
-                          } else {
-                            setState(() {});
-                          }
-                        },
+                            if (widget.picker) {
+                              Navigator.of(context).pop();
+                            } else {
+                              setState(() {});
+                            }
+                          },
+                        ),
                       );
                     },
                   ),
