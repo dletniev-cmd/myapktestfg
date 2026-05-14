@@ -21,9 +21,11 @@ import 'shell.dart';
 ///
 ///   1) [_OnboardingStage] — статичный хиро: лого GitHub, заголовок и
 ///      подпись «всё, что нужно — на одном экране», sticky-кнопка
-///      «Вставить ключ» внизу. На фоне — «призрачные» описания функций
-///      с Solar-иконками, которые радиально «летят на зрителя» из-за
-///      логотипа и растворяются у краёв экрана (см. [_FeatureParticlesBackground]).
+///      «Вставить ключ» внизу. На фоне — печатающиеся строки кода и
+///      коротких описаний функций (см. [_CodeRainBackground]). Появляются
+///      плавно через ≈3 секунды после захода — раньше тут ещё крутились
+///      «призрачные» карточки с иконками функций, юзер прямо просил их
+///      убрать и оставить только блоки кода в стиле терминала.
 ///   2) [_PermissionsStage] — показывается после того, как токен проверен;
 ///      содержит тумблеры разрешений (уведомления, доступ к галерее)
 ///      и кнопку «Начать».
@@ -44,22 +46,35 @@ class _SplashScreenState extends State<SplashScreen>
   // Показываем только реальные сетевые/auth ошибки (401 от GitHub и т.p.).
   String _error = '';
 
-  // Контроллер плавного появления фоновых слоёв (частицы + код-дождь).
-  // Юзер прямо просил: «частички при заходе должны появляться плавно а не
-  // сразу, примерно да секунд 5». Этот же контроллер срабатывает и при
-  // выходе из настроек (logout → SplashScreen пересоздаётся, _bgFade
-  // стартует с 0 и за 5 сек выходит на 1).
+  // Контроллер плавного появления фонового слоя (печатающиеся строки кода).
+  // Юзер: «появляться они должны начинать плавно, через секунды три».
+  // Реализуем как «3 сек тишины → плавный fade-in за 2.2 сек». Делаем
+  // это одним контроллером длительностью 5.2с с CurvedAnimation
+  // (Interval 3000/5200..1.0). До 3-й секунды значение остаётся 0, потом
+  // плавно идёт к 1.
+  // Этот же контроллер срабатывает и при выходе из настроек (logout →
+  // SplashScreen пересоздаётся, и появление кода снова начинается через
+  // 3 секунды).
   late final AnimationController _bgFade = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 5000),
+    duration: const Duration(milliseconds: 5200),
+  );
+  late final Animation<double> _bgFadeCurve = CurvedAnimation(
+    parent: _bgFade,
+    curve: const Interval(
+      // 3000мс задержки из 5200мс общей длительности → 0.5769…
+      3000 / 5200,
+      1.0,
+      curve: Curves.easeOutCubic,
+    ),
   );
 
   @override
   void initState() {
     super.initState();
-    // Стартуем fade-in с лёгкой задержкой — пока проиграется slide-in
-    // самого SplashScreen (если он был запушен поверх настроек),
-    // фоны ещё не видны и не отвлекают.
+    // Стартуем сразу после монтирования. Сам контроллер крутится
+    // 5.2 секунды, но `Interval` держит прозрачность на нуле первые
+    // 3 секунды — экран реально стартует пустым, как и просил юзер.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _bgFade.forward();
     });
@@ -171,10 +186,15 @@ class _SplashScreenState extends State<SplashScreen>
       body: Stack(
         fit: StackFit.expand,
         children: [
-          // Фоновые слои (код-дождь + летящие фичи) живут ТОЛЬКО на
-          // онбординге (stage 0). На экране разрешений (stage 1) их быть
-          // не должно — юзер просил. AnimatedSwitcher даёт мягкий
-          // fade-out при переходе, чтобы они не «обрубались» резко.
+          // Фон живёт ТОЛЬКО на онбординге (stage 0). На экране
+          // разрешений (stage 1) его быть не должно — юзер просил.
+          // AnimatedSwitcher даёт мягкий fade-out при переходе, чтобы
+          // фон не «обрубался» резко.
+          //
+          // Раньше тут лежал и _FeatureParticlesBackground (летящие
+          // карточки с иконками функций). Юзер: «убери типи эти
+          // карточки с иконками где описание функций итп!! оставь
+          // только блоки кода которые печатаются» — убрано полностью.
           Positioned.fill(
             child: IgnorePointer(
               child: AnimatedSwitcher(
@@ -183,26 +203,12 @@ class _SplashScreenState extends State<SplashScreen>
                 switchOutCurve: Curves.easeInCubic,
                 child: _stage == 0
                     ? FadeTransition(
-                        // Плавный fade-in 5 секунд при первом монтировании
-                        // splash-экрана. Спавн частиц и строк кода не
-                        // останавливаем, просто прозрачность слоя
-                        // ползёт от 0 к 1 — выглядит как «они постепенно
-                        // проявляются». Юзер: «при заходе должны
-                        // появляться плавно а не сразу, примерно да
-                        // секунд 5».
-                        opacity: CurvedAnimation(
-                          parent: _bgFade,
-                          curve: Curves.easeOutCubic,
-                        ),
-                        child: const Stack(
-                          key: ValueKey('bg0'),
-                          fit: StackFit.expand,
-                          children: [
-                            Positioned.fill(child: _CodeRainBackground()),
-                            Positioned.fill(
-                                child: _FeatureParticlesBackground()),
-                          ],
-                        ),
+                        key: const ValueKey('bg0'),
+                        // _bgFadeCurve = Interval(3000/5200..1.0).
+                        // До 3-й секунды прозрачность = 0 (экран пустой),
+                        // потом плавно (easeOutCubic, ~2.2с) выходит на 1.
+                        opacity: _bgFadeCurve,
+                        child: const _CodeRainBackground(),
                       )
                     : const SizedBox.expand(key: ValueKey('bg1')),
               ),
@@ -350,74 +356,18 @@ class _FadeRoute<T> extends PageRouteBuilder<T> {
 }
 
 // =====================================================================
-// Стадия 1. Онбординг (статичный хиро + летающие описания функций)
+// Стадия 1. Онбординг (статичный хиро + печатающиеся строки кода)
 // =====================================================================
 
-/// Описание одной «призрачной» фичи, которая летит на фоне:
-/// иконка из набора Solar + короткая подпись.
-class _GhostFeature {
-  final String iconName;
-  final String text;
-  const _GhostFeature(this.iconName, this.text);
-}
-
-/// Пул описаний функций, которые «пролетают» через фон. Порядок
-/// и состав согласованы по прототипу.
-const List<_GhostFeature> _kGhostFeatures = [
-  _GhostFeature('solar:cloud-upload-bold',       'Заливай файлы'),
-  _GhostFeature('solar:rocket-bold',             'Запускай Actions'),
-  _GhostFeature('solar:download-square-bold',    'Скачивай APK'),
-  _GhostFeature('solar:lock-keyhole-bold',       'Только на устройстве'),
-  _GhostFeature('solar:bell-bold',               'Уведомления о сборках'),
-  _GhostFeature('solar:code-square-bold',        'Просмотр кода'),
-  _GhostFeature('solar:bug-bold',                'Баг-трекер'),
-  _GhostFeature('solar:branching-paths-up-bold', 'Ветки и коммиты'),
-  _GhostFeature('solar:folder-with-files-bold',  'Все репозитории'),
-  _GhostFeature('solar:refresh-bold',            'Перезапуск Actions'),
-  _GhostFeature('solar:gallery-add-bold',        'Скриншоты к багам'),
-  _GhostFeature('solar:star-bold',               'Избранные репо'),
-  _GhostFeature('solar:eye-bold',                'Следи за статусом'),
-  _GhostFeature('solar:document-add-bold',       'Новый файл'),
-  _GhostFeature('solar:clipboard-add-bold',      'Вставь токен'),
-  _GhostFeature('solar:bolt-bold',               'Мгновенный пуш'),
-  _GhostFeature('solar:check-circle-bold',       'Сборка готова'),
-  _GhostFeature('solar:hand-stars-bold',         'Минимум кликов'),
-  _GhostFeature('solar:server-bold',             'Actions онлайн'),
-  _GhostFeature('solar:flag-bold',               'Релизы'),
-];
-
 /// Глобальная "скорость" фоновых анимаций splash.
-/// 1.0 — спокойный режим, 2.2 — пользователь зажал палец где-то на экране.
-/// Каждый из фоновых слоёв (_FeatureParticlesBackground / _CodeRainBackground)
-/// мягко доводит свою локальную скорость до этого таргета на каждом тике —
-/// это и даёт «плавное ускорение при удержании».
+/// 1.0 — спокойный режим, 1.25 — пользователь зажал палец где-то на экране.
+/// [_CodeRainBackground] мягко доводит свою локальную скорость до этого
+/// таргета на каждом тике — это и даёт «плавное ускорение при удержании».
+///
+/// Раньше тут жили ещё и «призрачные фичи» (_FeatureParticlesBackground)
+/// с летящими иконками — юзер прямо просил их убрать и оставить только
+/// блоки кода в стиле терминала.
 final ValueNotifier<double> _kSplashSpeedTarget = ValueNotifier<double>(1.0);
-
-/// Колоколообразная кривая альфы для дрейфующих частиц: rise — доля
-/// fade-in (e.g. 0.40), fall — доля fade-out. Плато между ними.
-/// Оба хвоста сглажены через easeInOutCubic, чтобы не было видимой
-/// линейной «резкой» границы — это и была причина жалоб юзера
-/// «иконки фейдятся резко».
-double _bell(double t, double rise, double fall) {
-  if (t <= 0.0) return 0.0;
-  if (t >= 1.0) return 0.0;
-  if (t < rise) {
-    final x = t / rise;
-    return _easeInOutCubic(x);
-  }
-  final fallStart = 1.0 - fall;
-  if (t > fallStart) {
-    final x = 1.0 - (t - fallStart) / fall;
-    return _easeInOutCubic(x);
-  }
-  return 1.0;
-}
-
-double _easeInOutCubic(double x) {
-  if (x < 0.5) return 4 * x * x * x;
-  final v = -2 * x + 2;
-  return 1 - v * v * v / 2;
-}
 
 class _OnboardingStage extends StatefulWidget {
   final bool loading;
@@ -635,314 +585,6 @@ class _OnboardingHero extends StatelessWidget {
 }
 
 // =====================================================================
-//  Анимированный фон: чипы-описания фич, плавающие ВОКРУГ логотипа
-// =====================================================================
-//
-// КАК УСТРОЕНО (важно для 60 fps и «без лагов»):
-//   • Один общий [Ticker] на весь фон. Список частиц меняется редко
-//     (новая раз в ~1.4с), поэтому setState вызывается только в момент
-//     спавна/смерти. Кадровые обновления (translate + opacity) идут
-//     через ValueNotifier<int> _frameTick → ValueListenableBuilder в
-//     каждом _ParticleView, поэтому ребилд локализован в листе.
-//   • Каждый _ParticleView обёрнут в RepaintBoundary — движение одной
-//     частицы НЕ заставляет соседние слои перерисовываться.
-//   • Цвета иконки/текста ФИКСИРОВАНЫ (не пересчитываются на кадр) —
-//     прозрачность через виджет Opacity, чтобы не убивать SVG raster
-//     cache на каждом кадре. Для 6 частиц saveLayer практически бесплатен,
-//     а вот пересоздание ColorFilter каждый кадр заметно дёргалось.
-//   • Никакого rotation/perspective/blur — только Transform.translate
-//     + Opacity, всё композируется на GPU.
-//
-// ТРАЕКТОРИЯ ОДНОЙ ЧАСТИЦЫ (8–10s, t ∈ [0..1]):
-//   • Спавнится НА КОЛЬЦЕ радиусом ~110px от центра лого (логотип 156px,
-//     радиус 78 — между лого и частицей всегда ~30px воздуха, частицы
-//     никогда не заходят на лого).
-//   • Линейно по радиусу уплывает к радиусу 240–290px и растворяется.
-//   • Размер ПОЧТИ НЕ МЕНЯЕТСЯ: 0.96 → 1.04 (никаких «появлений из точки»).
-//   • Альфа: 0 → peak (за первые 22% времени) → держится → 0 (за последние 28%).
-
-class _FeatureParticlesBackground extends StatefulWidget {
-  const _FeatureParticlesBackground();
-
-  @override
-  State<_FeatureParticlesBackground> createState() =>
-      _FeatureParticlesBackgroundState();
-}
-
-class _FeatureParticlesBackgroundState
-    extends State<_FeatureParticlesBackground>
-    with SingleTickerProviderStateMixin {
-  /// Максимум одновременно живых частиц. «Медленный дрейф» (выбран
-  /// юзером в прототипе v108) самый спокойный из трёх — 3 одновременно,
-  /// долго живут, медленно осиживают.
-  static const int _kMaxParticles = 3;
-
-  /// Внутренний радиус «эмиссии» — это позиция ЦЕНТРА чипа. Чип имеет
-  /// заметную ширину (иконка ~22 + текст ~80–110), поэтому при r=110
-  /// его левая/правая половина (~50–60px) могла залетать на сам лого
-  /// (радиус 78). Юзер прямо просил «чтобы не заходили на лого».
-  /// Поднимаем эмиссию до 160 — чип всегда стоит снаружи логотипа.
-  static const double _kInnerRadius = 160.0;
-
-  /// Геометрический сдвиг центра лого относительно центра Stack'а.
-  /// Хиро в Column'е: Spacer(1) — Лого+Текст(~225) — Spacer(1) —
-  /// нижний блок(~200). При таком раскладе центр лого оказывается
-  /// примерно на 110px ВЫШЕ центра экрана (см. вывод формулы в
-  /// комментарии ниже). Используем как константу — для всех
-  /// разумных высот экрана это значение почти не плывёт.
-  ///
-  ///   freeH = H − heroBlock(225) − bottomBlock(200) = H − 425
-  ///   topSpacer = freeH/2 = (H − 425)/2
-  ///   logoCenterY = topSpacer + 78 = (H − 425)/2 + 78
-  ///   stackCenterY = H/2
-  ///   emitDy = logoCenterY − stackCenterY = (78 − 425/2) ≈ −134.5
-  static const double _kEmitDy = -134.5;
-
-  late final Ticker _ticker;
-  // Реальная и масштабированная "сцена времени". В сцену добавляется
-  // dt * speed, где speed плавно доводится до _kSplashSpeedTarget.value.
-  // Все частицы живут в этой "сцене" — поэтому скорость можно ускорять
-  // бесшовно прямо посреди жизни любой частицы (не нужно её пересоздавать).
-  Duration _realLast = Duration.zero;
-  int _scaledMicros = 0;
-  int _lastSpawnMicros = 0;
-  double _speed = 1.0;
-
-  final math.Random _rnd = math.Random();
-  final List<_Particle> _particles = [];
-  int _featureCursor = 0;
-  int _idCursor = 0;
-
-  // Равномерное угловое распределение: золотой угол ~137.5°.
-  // Каждый следующий спавн — на (предыдущий + GOLDEN) с маленьким
-  // случайным джиттером. Это гарантирует, что частицы НЕ кучкуются
-  // в одной части экрана даже на коротком окне.
-  static const double _kGolden = 2.39996322972865332; // π * (3 - √5)
-  double _angleCursor = 0.0;
-
-  /// «Тик кадра» в МАСШТАБИРОВАННЫХ микросекундах. Каждый _ParticleView
-  /// слушает его через ValueListenableBuilder — ребилдятся только листья.
-  final ValueNotifier<int> _frameTick = ValueNotifier<int>(0);
-
-  @override
-  void initState() {
-    super.initState();
-    _angleCursor = _rnd.nextDouble() * 2 * math.pi;
-    _ticker = createTicker(_onTick)..start();
-  }
-
-  @override
-  void dispose() {
-    _ticker.dispose();
-    _frameTick.dispose();
-    super.dispose();
-  }
-
-  void _onTick(Duration elapsed) {
-    // dt в микросекундах
-    final dtMicros = (elapsed - _realLast).inMicroseconds.clamp(0, 250000);
-    _realLast = elapsed;
-
-    // Плавный ease скорости к таргету.
-    final target = _kSplashSpeedTarget.value;
-    final k = 1 - math.exp(-dtMicros / 600000.0);
-    _speed += (target - _speed) * k;
-
-    _scaledMicros += (dtMicros * _speed).round();
-
-    // Спавн-пауза 4200–4800мс СЦЕНЫ. При жизни частицы 11–13с и
-    // лимите в 3 штуки это попадает точно в ритм «Медленного
-    // дрейфа» из прототипа v108: в среднем 2.5–3 частицы на экране,
-    // без «высыпания» нескольких чипов подряд.
-    final spawnGap = 4200 + _rnd.nextInt(600);
-    final due = (_scaledMicros - _lastSpawnMicros) >= spawnGap * 1000;
-    if (due && _particles.length < _kMaxParticles) {
-      _spawn();
-      _lastSpawnMicros = _scaledMicros;
-    }
-
-    bool removed = false;
-    for (int i = _particles.length - 1; i >= 0; i--) {
-      if (_particles[i].deadAt(_scaledMicros)) {
-        _particles.removeAt(i);
-        removed = true;
-      }
-    }
-
-    _frameTick.value = _scaledMicros;
-
-    if (removed && mounted) setState(() {});
-  }
-
-  void _spawn({double initialAgeFrac = 0.0}) {
-    final feature = _kGhostFeatures[_featureCursor % _kGhostFeatures.length];
-    _featureCursor++;
-
-    // Медленный дрейф: жизнь 11–13 секунд. Долго живут и медленно
-    // осиживают — режим, который юзер выбрал в прототипе v108.
-    final durationMs = 11000 + _rnd.nextInt(2000);
-
-    // Равномерное угловое распределение по золотому углу + лёгкий джиттер.
-    _angleCursor = (_angleCursor + _kGolden) % (2 * math.pi);
-    final angle = _angleCursor + (_rnd.nextDouble() - 0.5) * 0.25;
-
-    final endRadius = 290.0 + _rnd.nextDouble() * 50.0;     // 290–340
-    final peakAlpha = 0.55 + _rnd.nextDouble() * 0.25;      // 0.55–0.80
-    final fontSize = 14.0 + _rnd.nextDouble() * 1.5;        // 14–15.5
-    final startMicros =
-        _scaledMicros - (durationMs * 1000 * initialAgeFrac).round();
-    _particles.add(_Particle(
-      id: _idCursor++,
-      feature: feature,
-      angle: angle,
-      durationMs: durationMs,
-      endRadius: endRadius,
-      peakAlpha: peakAlpha,
-      fontSize: fontSize,
-      startedAtMicros: startMicros,
-    ));
-    if (mounted) setState(() {});
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final pal = context.pal;
-    final iconColor = AppColors.accent;
-    final textColor = pal.text;
-
-    return RepaintBoundary(
-      child: Stack(
-        alignment: Alignment.center,
-        fit: StackFit.expand,
-        clipBehavior: Clip.hardEdge,
-        children: [
-          for (final p in _particles)
-            _ParticleView(
-              key: ValueKey<int>(p.id),
-              particle: p,
-              innerRadius: _kInnerRadius,
-              emitDy: _kEmitDy,
-              iconColor: iconColor,
-              textColor: textColor,
-              frameTick: _frameTick,
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-class _Particle {
-  final int id;
-  final _GhostFeature feature;
-  final double angle;
-  final int durationMs;
-  final double endRadius;
-  final double peakAlpha;
-  final double fontSize;
-  final int startedAtMicros;
-  const _Particle({
-    required this.id,
-    required this.feature,
-    required this.angle,
-    required this.durationMs,
-    required this.endRadius,
-    required this.peakAlpha,
-    required this.fontSize,
-    required this.startedAtMicros,
-  });
-  bool deadAt(int nowMicros) =>
-      (nowMicros - startedAtMicros) >= durationMs * 1000;
-}
-
-class _ParticleView extends StatelessWidget {
-  final _Particle particle;
-  final double innerRadius;
-  final double emitDy;
-  final Color iconColor;
-  final Color textColor;
-  final ValueNotifier<int> frameTick;
-  const _ParticleView({
-    super.key,
-    required this.particle,
-    required this.innerRadius,
-    required this.emitDy,
-    required this.iconColor,
-    required this.textColor,
-    required this.frameTick,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    // Чип строится ОДИН РАЗ с фиксированными цветами. На кадровом
-    // ребилде меняются только Transform.translate и Opacity — это
-    // даёт идеальную плавность: SVG-raster cache не инвалидируется.
-    final iconSize = particle.fontSize * 1.45;
-    final chip = Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Iconify(
-          particle.feature.iconName,
-          size: iconSize,
-          color: iconColor,
-        ),
-        const SizedBox(width: 8),
-        Text(
-          particle.feature.text,
-          maxLines: 1,
-          softWrap: false,
-          style: TextStyle(
-            color: textColor,
-            fontSize: particle.fontSize,
-            fontWeight: FontWeight.w500,
-            letterSpacing: 0.1,
-          ),
-        ),
-      ],
-    );
-
-    return RepaintBoundary(
-      child: ValueListenableBuilder<int>(
-        valueListenable: frameTick,
-        child: chip,
-        builder: (_, nowMicros, builtChip) {
-          final t = (nowMicros - particle.startedAtMicros) /
-              (particle.durationMs * 1000.0);
-          if (t <= 0.0 || t >= 1.0) return const SizedBox.shrink();
-
-          // === Медленный дрейф (выбран юзером в прототипе v108) ===
-          //
-          // Радиус: летит очень плавно по easeOutCubic — замедляется
-          // к концу жизни. Конечный радиус сжат до 65% от полного
-          // (~85px пути вместо ~150), частица НЕ долетает до края
-          // экрана и плавно растворяется задолго до него — это
-          // снимает претензию юзера о «резком» затухании у края.
-          final tEase = 1.0 - math.pow(1.0 - t, 3).toDouble();
-          final endR =
-              innerRadius + (particle.endRadius - innerRadius) * 0.65;
-          final r = innerRadius + (endR - innerRadius) * tEase;
-          final scale = 0.96 + 0.06 * tEase;
-          // Альфа: колокол 40/20/40 по easeInOutCubic — никаких
-          // линейных переходов, оба хвоста сглажены.
-          final alpha = particle.peakAlpha * _bell(t, 0.40, 0.40);
-          if (alpha <= 0.0) return const SizedBox.shrink();
-
-          final dx = math.cos(particle.angle) * r;
-          final dy = math.sin(particle.angle) * r;
-          return Transform.translate(
-            offset: Offset(dx, dy + emitDy),
-            child: Opacity(
-              opacity: alpha,
-              child: Transform.scale(scale: scale, child: builtChip),
-            ),
-          );
-        },
-      ),
-    );
-  }
-}
-
-// =====================================================================
 // Фон: «дождь кода» — короткие строки git/cli печатаются в реальном
 // времени и медленно уплывают вверх. Распределяются по СЛОТАМ
 // (14 строк × лево/право), поэтому никогда не накладываются друг на
@@ -951,7 +593,37 @@ class _ParticleView extends StatelessWidget {
 // и частицы.
 // =====================================================================
 
+/// Пул строк, которые «печатаются» в код-дождевом фоне.
+///
+/// Состав согласован с юзером: «помимо кода, в стиле кода появляется
+/// печатается текст типо: приложение разработал даниил летниев, ну и
+/// там уже также появляются текст описания каких-то функций». Всё
+/// рендерится одним и тем же монопшинным виджетом [_CodeLineView] с
+/// одной и той же анимацией печати — то есть авторская строка и
+/// фичи-описания визуально неотличимы от обычных команд: только их
+/// СОДЕРЖИМОЕ отличается от стандартного `git ...` / `flutter ...`.
+///
+/// Префиксы «# » у фич-описаний — это shell-style комментарий, как раз
+/// чтобы они «жили» в той же стилистике терминала, что и команды.
 const List<String> _kCodeSnippets = [
+  // ─── Авторская строка (юзер прямо просил включить) ───────────
+  'приложение разработал даниил летниев',
+  '# author: даниил летниев',
+  '// (c) daniil letniev',
+
+  // ─── Описания функций приложения в стиле комментариев ────────
+  '# заливай файлы — push в существующий репо',
+  '# запускай GitHub Actions из приложения',
+  '# скачивай APK прямо из release',
+  '# баг-трекер со скриншотами и метками',
+  '# уведомления о статусах сборок',
+  '# просмотр кода и веток репозитория',
+  '# твои репозитории всегда под рукой',
+  '# мгновенный пуш одним тапом',
+  '# редактор скриншотов прямо в баге',
+  '# токен хранится только на устройстве',
+
+  // ─── Обычные shell/git/flutter-команды ───────────────────────
   'git add .',
   'git commit -m "feat: splash polish"',
   'git push origin main',

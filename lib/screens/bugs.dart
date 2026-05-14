@@ -309,7 +309,18 @@ class _BugsScreenState extends State<BugsScreen> {
                   // что анимация удаления + сдвига остальных идёт ровно
                   // одним проходом.
                   physics: const BouncingScrollPhysics(),
-                  padding: EdgeInsets.fromLTRB(18, topPad, 18, 120),
+                  // Юзер (баг n7787): «когда тыкаешь на кнопку фильтра
+                  // сортировки то при нажатии карточки чото прыгают».
+                  // Причина — раньше у последней карточки `isLast=true`
+                  // делал bottom padding = 0, у всех остальных = 10.
+                  // При смене сортировки роль «последней» переходила к
+                  // другому ID, у пары карточек bottom padding менялся
+                  // 0↔10, AnimatedSize плавно проигрывал высоту — это и
+                  // выглядело как «прыжок». Чиним так: bottom padding у
+                  // ВСЕХ карточек одинаков (10), а финальный отступ
+                  // списка переезжает в `padding` ListView (тогда никакой
+                  // карточке не нужно знать «последняя ли она»).
+                  padding: EdgeInsets.fromLTRB(18, topPad, 18, 110),
                   children: [
                     for (var i = 0; i < bugs.length; i++)
                       _BugListEntry(
@@ -319,7 +330,6 @@ class _BugsScreenState extends State<BugsScreen> {
                         key: ValueKey('bug_${bugs[i].id}'),
                         bug: bugs[i],
                         deleting: _deletingIds.contains(bugs[i].id),
-                        isLast: i == bugs.length - 1,
                         onTap: () => pushSlide(
                           context,
                           BugDetailScreen(id: bugs[i].id),
@@ -781,14 +791,12 @@ Color bugThumbColor(BugItem b) {
 class _BugListEntry extends StatelessWidget {
   final BugItem bug;
   final bool deleting;
-  final bool isLast;
   final VoidCallback onTap;
   final VoidCallback onDelete;
   const _BugListEntry({
     super.key,
     required this.bug,
     required this.deleting,
-    required this.isLast,
     required this.onTap,
     required this.onDelete,
   });
@@ -805,8 +813,12 @@ class _BugListEntry extends StatelessWidget {
           curve: Curves.easeOutCubic,
           child: deleting
               ? const SizedBox(width: double.infinity)
+              // Постоянный bottom padding у всех карточек (включая
+              // последнюю) — см. комментарий выше про баг n7787. Если
+              // ставить 0 для последней, при смене сортировки карточки
+              // визуально прыгают на 10px.
               : Padding(
-                  padding: EdgeInsets.only(bottom: isLast ? 0 : 10),
+                  padding: const EdgeInsets.only(bottom: 10),
                   child: _BugCard(
                     bug: bug,
                     onTap: onTap,

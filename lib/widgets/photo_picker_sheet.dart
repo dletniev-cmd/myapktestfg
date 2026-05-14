@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:collection';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:photo_manager/photo_manager.dart';
@@ -5,6 +8,46 @@ import 'm3_loading.dart';
 
 import '../iconify.dart';
 import '../theme.dart';
+
+/// Глобальный семафор-«гейт» для запросов миниатюр у PhotoManager.
+/// PhotoManager.thumbnailDataWithSize — это MethodChannel→JNI→Android
+/// SDK→DownsampleStrategy + декод JPEG в нативе. Тяжёлый MethodChannel-
+/// трафик блокирует UI-тред. Юзер (баг n2823): «лаги при прокрутке в
+/// панели выбор фото».
+///
+/// Без ограничения параллелизма при быстром скролле GridView монтирует
+/// десяток новых _PhotoCell'ов одновременно, каждый стартует запрос
+/// миниатюры — JNI/Binder заваливается, UI-тред получает jank-кадры.
+///
+/// Гейт держит максимум `_kMaxConcurrentThumbnails` запросов в полёте,
+/// остальные кооперативно встают в очередь и стартуют по мере
+/// освобождения слотов. Конкретно 3 — на типичном Android-flagship
+/// этого хватает чтобы держать конвейер сытым, но не топить UI-тред.
+const int _kMaxConcurrentThumbnails = 3;
+
+class _ThumbGate {
+  static int _active = 0;
+  static final Queue<Completer<void>> _q = Queue<Completer<void>>();
+
+  static Future<void> acquire() async {
+    if (_active < _kMaxConcurrentThumbnails) {
+      _active++;
+      return;
+    }
+    final c = Completer<void>();
+    _q.add(c);
+    return c.future;
+  }
+
+  static void release() {
+    if (_q.isNotEmpty) {
+      _q.removeFirst().complete();
+    } else {
+      _active--;
+      if (_active < 0) _active = 0;
+    }
+  }
+}
 
 /// Открывает шит-пикер фото из галереи и возвращает список выбранных
 /// оригинальных байт. Возвращает `null`, если юзер нажал «Отмена»
@@ -628,10 +671,23 @@ class _PhotoCellState extends State<_PhotoCell> {
         if (!mounted) return;
       }
     }
-    // 300x300 — комфортный размер для grid-cell ~130px на 2-3x DPR.
-    // Меньше — заметная пикселизация, больше — лишний декод.
-    final bytes =
-        await widget.asset.thumbnailDataWithSize(const ThumbnailSize(300, 300));
+    // _ThumbGate: ограничиваем параллелизм запросов миниатюр (см.
+    // комментарий у самого класса). Без этого при быстрой прокрутке
+    // десятки _PhotoCell стартуют thumbnailDataWithSize одновременно,
+    // что бьёт по UI-треду через MethodChannel/JNI. Гейт держит в
+    // полёте максимум 3 запроса — этого хватает, чтобы видимые
+    // ячейки заполнялись быстро, но без jank-кадров.
+    await _ThumbGate.acquire();
+    Uint8List? bytes;
+    try {
+      if (!mounted) return;
+      // 300x300 — комфортный размер для grid-cell ~130px на 2-3x DPR.
+      // Меньше — заметная пикселизация, больше — лишний декод.
+      bytes = await widget.asset
+          .thumbnailDataWithSize(const ThumbnailSize(300, 300));
+    } finally {
+      _ThumbGate.release();
+    }
     if (!mounted || bytes == null) return;
     final provider = MemoryImage(bytes);
     // precacheImage заставляет движок декодировать байты в раст ДО

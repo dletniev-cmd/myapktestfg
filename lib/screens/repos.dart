@@ -227,13 +227,12 @@ class _ReposScreenState extends State<ReposScreen> {
                       ),
                     ),
                   )
-                : AppearGate(
-                  // AppearGate открывает короткое окно появления только
-                  // для первой партии карточек после загрузки. Карточки,
-                  // которые ListView рендерит ЛЕНИВО при прокрутке,
-                  // появляются мгновенно — без fade+slide. Юзер прямо
-                  // просил: «нахуя плавное появление при прокрутке».
-                  child: ListView.separated(
+                : ListView.separated(
+                    // Юзер (баг n8081): «убери ебучее плавное появление
+                    // карточек!!! и везде, где оно используется, убери
+                    // его». Никаких AppearOnMount / AppearGate здесь
+                    // больше нет — карточки появляются мгновенно при
+                    // монтировании, как обычный список.
                     physics: const BouncingScrollPhysics(),
                     padding: EdgeInsets.fromLTRB(18, topPad, 18, 32),
                     itemCount: list.length,
@@ -242,45 +241,34 @@ class _ReposScreenState extends State<ReposScreen> {
                       final r = list[i];
                       final isActive =
                           AppState.I.activeRepo?.fullName == r.fullName;
-                      // AppearOnMount каскадно проявляет карточки
-                      // репо при первой постройке. Когда AppearGate
-                      // выше закроет своё окно, дальнейшие монтажи
-                      // (ленивые при скролле) сразу в финальном
-                      // состоянии — без анимации.
-                      return AppearOnMount(
-                        key: ValueKey('appear_repo_${r.fullName}'),
-                        delay: Duration(
-                            milliseconds: (i * 30).clamp(0, 240)),
-                        child: _RepoTile(
-                          repo: r,
-                          selected: isActive,
-                          onTap: () async {
-                            if (widget.picker) {
-                              await AppState.I.setActiveRepo(r);
-                              if (!context.mounted) return;
-                              Navigator.of(context).pop();
-                            } else {
-                              pushSlide(
-                                  context, RepoDetailScreen(repo: r));
-                            }
-                          },
-                          onSelectTap: () async {
-                            // Баг n1738 / n2833: в разделе «Репозитории» и
-                            // «Мои репозитории» любой репо можно отметить
-                            // галочкой — это делает его активным во всём приложении.
+                      return _RepoTile(
+                        repo: r,
+                        selected: isActive,
+                        onTap: () async {
+                          if (widget.picker) {
                             await AppState.I.setActiveRepo(r);
                             if (!context.mounted) return;
-                            if (widget.picker) {
-                              Navigator.of(context).pop();
-                            } else {
-                              setState(() {});
-                            }
-                          },
-                        ),
+                            Navigator.of(context).pop();
+                          } else {
+                            pushSlide(
+                                context, RepoDetailScreen(repo: r));
+                          }
+                        },
+                        onSelectTap: () async {
+                          // Баг n1738 / n2833: в разделе «Репозитории» и
+                          // «Мои репозитории» любой репо можно отметить
+                          // галочкой — это делает его активным во всём приложении.
+                          await AppState.I.setActiveRepo(r);
+                          if (!context.mounted) return;
+                          if (widget.picker) {
+                            Navigator.of(context).pop();
+                          } else {
+                            setState(() {});
+                          }
+                        },
                       );
                     },
                   ),
-                ),
           ),
           Positioned(
             top: 0,

@@ -160,10 +160,17 @@ class _BugDrawScreenState extends State<BugDrawScreen> {
                                   letterSpacing: -.3)),
                         ),
                       ),
-                      _CircleBtn(
-                        icon: 'solar:check-circle-bold',
-                        bg: AppColors.accent,
-                        fg: Colors.white,
+                      // Юзер (баг n1248): «переделай эту кнопку, во-первых
+                      // убери затемнение при нажатии, и дизайн возьми как
+                      // у кнопки галочки в панели выбора фото». Раньше тут
+                      // была обёртка PressScale (масштабирование на нажатие)
+                      // + Iconify(solar:check-circle-bold) — теперь точная
+                      // копия `_ConfirmCheck` из photo_picker_sheet.dart:
+                      // 32×32 акцентный круг, Icons.check_rounded 20px
+                      // белым, без PressScale (никакой обратной связи на
+                      // нажатие), 1-в-1 как в фото-пикере.
+                      _PhotoPickerStyleCheckBtn(
+                        busy: _saving,
                         onTap: _saving ? null : _save,
                       ),
                     ],
@@ -608,4 +615,66 @@ class _CanvasPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _CanvasPainter oldDelegate) =>
       oldDelegate.image != image || oldDelegate.strokes != strokes;
+}
+
+/// Кнопка-галочка «как в фото-пикере». Полная визуальная копия
+/// [_ConfirmCheck] из `widgets/photo_picker_sheet.dart`:
+///   • 32×32 круг с заливкой `AppColors.accent`;
+///   • `Icons.check_rounded` 20px белым (или маленький спиннер в режиме
+///     `busy`);
+///   • Никакого PressScale / Ink / ripple — на нажатие нет ни масштаба,
+///     ни «затемнения». Это требование бага n1248.
+///   • Когда `onTap == null`, кнопка не реагирует на касания и слегка
+///     гасится opacity → 0.5.
+class _PhotoPickerStyleCheckBtn extends StatelessWidget {
+  final bool busy;
+  final VoidCallback? onTap;
+  const _PhotoPickerStyleCheckBtn({
+    required this.busy,
+    required this.onTap,
+  });
+  @override
+  Widget build(BuildContext context) {
+    final enabled = onTap != null && !busy;
+    return IgnorePointer(
+      ignoring: !enabled,
+      child: AnimatedOpacity(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOutCubic,
+        opacity: enabled ? 1.0 : 0.5,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+            child: Container(
+              width: 32,
+              height: 32,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: AppColors.accent,
+              ),
+              child: busy
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: M3LoadingIndicator(
+                        strokeWidth: 2.2,
+                        strokeCap: StrokeCap.round,
+                        valueColor:
+                            AlwaysStoppedAnimation<Color>(Colors.white),
+                      ),
+                    )
+                  : const Icon(
+                      Icons.check_rounded,
+                      color: Colors.white,
+                      size: 20,
+                    ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }

@@ -340,42 +340,29 @@ class _ActionsScreenState extends State<ActionsScreen>
               : 'Нет запусков с этим фильтром',
           sub: ''));
     }
-    // AppearGate открывает короткое окно, в течение которого первая
-    // партия карточек (та, что попадает в viewport сразу при загрузке)
-    // успевает проиграть свой fade+slide. После закрытия окна любые
-    // карточки, которые ListView.builder монтирует ЛЕНИВО при прокрутке,
-    // появляются мгновенно. Юзер прямо просил: «нахуя плавное появление
-    // при прокрутке?? я просил после загрузки».
-    return AppearGate(
-      child: ListView.builder(
-        physics: const BouncingScrollPhysics(),
-        padding: padding,
-        itemCount: filtered.length,
-        itemBuilder: (_, i) {
-          final run = filtered[i];
-          // RepaintBoundary вокруг карточки рана — даже когда обновляется
-          // живой meta-лейбл (раз в секунду), Flutter не будет
-          // перерисовывать соседние карточки в списке.
-          // AppearOnMount: фейд + лёгкий подъём при первом монтировании,
-          // НО только пока AppearGate выше держит окно открытым. После
-          // закрытия окна (≈700мс с момента монтажа ListView) карточки,
-          // которые мы ленивo рендерим при прокрутке, появляются сразу.
-          return RepaintBoundary(
-            child: AppearOnMount(
-              key: ValueKey('appear_run_${run.id}'),
-              delay: Duration(milliseconds: (i * 35).clamp(0, 280)),
-              child: Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: _RunCard(
-                  run: run,
-                  onTap: () => pushSlide(context, RunDetailScreen(run: run)),
-                  onRefresh: _refresh,
-                ),
-              ),
+    // Юзер (баг n8081): «убери ебучее плавное появление карточек!!! и
+    // везде, где оно используется, убери его». Никаких AppearOnMount /
+    // AppearGate — карточки появляются мгновенно при монтировании.
+    return ListView.builder(
+      physics: const BouncingScrollPhysics(),
+      padding: padding,
+      itemCount: filtered.length,
+      itemBuilder: (_, i) {
+        final run = filtered[i];
+        // RepaintBoundary вокруг карточки рана — даже когда обновляется
+        // живой meta-лейбл (раз в секунду), Flutter не будет
+        // перерисовывать соседние карточки в списке.
+        return RepaintBoundary(
+          child: Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: _RunCard(
+              run: run,
+              onTap: () => pushSlide(context, RunDetailScreen(run: run)),
+              onRefresh: _refresh,
             ),
-          );
-        },
-      ),
+          ),
+        );
+      },
     );
   }
 

@@ -723,6 +723,19 @@ class _RoundedShot extends StatelessWidget {
   });
   @override
   Widget build(BuildContext context) {
+    // Юзер (баг n9225): «лагает свайпанье скринов» в полноэкранном
+    // вьювере. Причина — PageView держит 3 страницы одновременно, на
+    // каждой Image.memory декодит ПОЛНОРАЗМЕРНЫЙ PNG (1-3 МБ, ~1080×~2400),
+    // и Skia рендерит его в кадр, в котором всё равно физически ~412×~915
+    // dp. То есть мы декодим раз в 2-3 больше пикселей, чем рисуем, и
+    // это бьёт по UI-треду при каждом свайпе.
+    //
+    // Фикс — `cacheWidth` подсказывает движку декодировать картинку
+    // сразу в размер вьюпорта (учитывая devicePixelRatio). Декод
+    // быстрее, текстура меньше, GPU upload тоже легче. Качество визуально
+    // не страдает: мы всё равно не делаем зум.
+    final media = MediaQuery.of(context);
+    final cacheW = (media.size.width * media.devicePixelRatio).round();
     return ClipRRect(
       borderRadius: BorderRadius.circular(radius),
       child: Image.memory(
@@ -730,6 +743,7 @@ class _RoundedShot extends StatelessWidget {
         fit: fit,
         filterQuality: FilterQuality.medium,
         gaplessPlayback: true,
+        cacheWidth: cacheW,
       ),
     );
   }
