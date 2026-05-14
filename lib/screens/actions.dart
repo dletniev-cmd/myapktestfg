@@ -83,6 +83,19 @@ class _ActionsScreenState extends State<ActionsScreen>
     AppState.I.addListener(_onState);
     _attachLiveTick();
     _restoreCache();
+    // Юзер: «при первом заходе статус „обновлено сек назад“ почему-то
+    // не виден, видна только точка рядом.. а потом резко чото
+    // появляется, экран дёргается». Причина была в том, что
+    // _lastFetchAt при первом монтировании был null, _agoParts()
+    // возвращал null, и весь блок «обновлено N с назад» был свёрнут
+    // в SizedBox.shrink. Когда первый _refresh завершался, блок
+    // внезапно появлялся и вызывал layout-jolt.
+    //
+    // Чиним просто: при монтировании сразу проставляем _lastFetchAt
+    // = now. Тогда с первого же кадра в шапке стоит «обновлено 0с
+    // назад», layout стабильный, дальнейшее обновление поля только
+    // двигает счётчик секунд — никаких внезапных появлений блока.
+    _lastFetchAt = DateTime.now();
     _refresh();
     _autoRefresh =
         Timer.periodic(const Duration(seconds: 4), (_) => _refresh());
@@ -327,35 +340,42 @@ class _ActionsScreenState extends State<ActionsScreen>
               : 'Нет запусков с этим фильтром',
           sub: ''));
     }
-    return ListView.builder(
-      physics: const BouncingScrollPhysics(),
-      padding: padding,
-      itemCount: filtered.length,
-      itemBuilder: (_, i) {
-        final run = filtered[i];
-        // RepaintBoundary вокруг карточки рана — даже когда обновляется
-        // живой meta-лейбл (раз в секунду), Flutter не будет
-        // перерисовывать соседние карточки в списке.
-        // AppearOnMount: фейд + лёгкий подъём при первой постройке;
-        // задержка по индексу даёт каскад сверху вниз. У AppearOnMount
-        // ключ ValueKey(run.id) — если запуск переехал в списке после
-        // ребилда, состояние анимации сохранится за карточкой, а не
-        // запустится заново.
-        return RepaintBoundary(
-          child: AppearOnMount(
-            key: ValueKey('appear_run_${run.id}'),
-            delay: Duration(milliseconds: (i * 35).clamp(0, 280)),
-            child: Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: _RunCard(
-                run: run,
-                onTap: () => pushSlide(context, RunDetailScreen(run: run)),
-                onRefresh: _refresh,
+    // AppearGate открывает короткое окно, в течение которого первая
+    // партия карточек (та, что попадает в viewport сразу при загрузке)
+    // успевает проиграть свой fade+slide. После закрытия окна любые
+    // карточки, которые ListView.builder монтирует ЛЕНИВО при прокрутке,
+    // появляются мгновенно. Юзер прямо просил: «нахуя плавное появление
+    // при прокрутке?? я просил после загрузки».
+    return AppearGate(
+      child: ListView.builder(
+        physics: const BouncingScrollPhysics(),
+        padding: padding,
+        itemCount: filtered.length,
+        itemBuilder: (_, i) {
+          final run = filtered[i];
+          // RepaintBoundary вокруг карточки рана — даже когда обновляется
+          // живой meta-лейбл (раз в секунду), Flutter не будет
+          // перерисовывать соседние карточки в списке.
+          // AppearOnMount: фейд + лёгкий подъём при первом монтировании,
+          // НО только пока AppearGate выше держит окно открытым. После
+          // закрытия окна (≈700мс с момента монтажа ListView) карточки,
+          // которые мы ленивo рендерим при прокрутке, появляются сразу.
+          return RepaintBoundary(
+            child: AppearOnMount(
+              key: ValueKey('appear_run_${run.id}'),
+              delay: Duration(milliseconds: (i * 35).clamp(0, 280)),
+              child: Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: _RunCard(
+                  run: run,
+                  onTap: () => pushSlide(context, RunDetailScreen(run: run)),
+                  onRefresh: _refresh,
+                ),
               ),
             ),
-          ),
-        );
-      },
+          );
+        },
+      ),
     );
   }
 

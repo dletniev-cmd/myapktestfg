@@ -227,7 +227,13 @@ class _ReposScreenState extends State<ReposScreen> {
                       ),
                     ),
                   )
-                : ListView.separated(
+                : AppearGate(
+                  // AppearGate открывает короткое окно появления только
+                  // для первой партии карточек после загрузки. Карточки,
+                  // которые ListView рендерит ЛЕНИВО при прокрутке,
+                  // появляются мгновенно — без fade+slide. Юзер прямо
+                  // просил: «нахуя плавное появление при прокрутке».
+                  child: ListView.separated(
                     physics: const BouncingScrollPhysics(),
                     padding: EdgeInsets.fromLTRB(18, topPad, 18, 32),
                     itemCount: list.length,
@@ -237,10 +243,10 @@ class _ReposScreenState extends State<ReposScreen> {
                       final isActive =
                           AppState.I.activeRepo?.fullName == r.fullName;
                       // AppearOnMount каскадно проявляет карточки
-                      // репо при первой постройке. Ключ по fullName
-                      // — анимация запускается только один раз для
-                      // каждого репо (при ребилдах из-за смены
-                      // активного репо состояние сохраняется).
+                      // репо при первой постройке. Когда AppearGate
+                      // выше закроет своё окно, дальнейшие монтажи
+                      // (ленивые при скролле) сразу в финальном
+                      // состоянии — без анимации.
                       return AppearOnMount(
                         key: ValueKey('appear_repo_${r.fullName}'),
                         delay: Duration(
@@ -274,6 +280,7 @@ class _ReposScreenState extends State<ReposScreen> {
                       );
                     },
                   ),
+                ),
           ),
           Positioned(
             top: 0,

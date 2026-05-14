@@ -16,6 +16,7 @@
 //    без wavy. Wavy — характерная фишка нового M3.
 // ============================================================
 
+import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:expressive_loading_indicator/expressive_loading_indicator.dart';
@@ -491,17 +492,80 @@ class _RisingTextState extends State<RisingText>
   }
 }
 
+/// [AppearGate] открывает короткое окно (по умолчанию 700мс с
+/// собственного `initState`), в течение которого вложенные
+/// [AppearOnMount] реально проигрывают появление. После закрытия
+/// окна любые новые `AppearOnMount` внутри сразу появляются в
+/// финальном состоянии — без fade+slide.
+///
+/// Зачем: `AppearOnMount` сидит в `ListView.builder` (Actions,
+/// Repos и т.п.), который монтирует элементы лениво, по мере того
+/// как они попадают в viewport. Без гейта это превращалось в
+/// «плавное появление при прокрутке» — каждый раз когда новая
+/// карточка въезжала снизу, она ещё и фейдила. Юзер прямо просил:
+/// «нахуя плавное появление при прокрутке? я просил после загрузки.»
+/// Гейт ровно это и делает: первый набор карточек после загрузки
+/// успевает проиграть каскад, а дальше — мгновенный рендер.
+class AppearGate extends StatefulWidget {
+  final Widget child;
+  final Duration window;
+  const AppearGate({
+    super.key,
+    required this.child,
+    this.window = const Duration(milliseconds: 700),
+  });
+
+  @override
+  State<AppearGate> createState() => _AppearGateState();
+
+  /// Возвращает `true`, если в текущем контексте окно гейта ещё
+  /// открыто и `AppearOnMount` должен запустить анимацию.
+  /// Если гейта в дереве нет — считаем открытым (back-compat).
+  static bool isOpen(BuildContext context) {
+    final scope =
+        context.dependOnInheritedWidgetOfExactType<_AppearGateScope>();
+    return scope?.open ?? true;
+  }
+}
+
+class _AppearGateState extends State<AppearGate> {
+  bool _open = true;
+  Timer? _t;
+
+  @override
+  void initState() {
+    super.initState();
+    _t = Timer(widget.window, () {
+      if (mounted) setState(() => _open = false);
+    });
+  }
+
+  @override
+  void dispose() {
+    _t?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      _AppearGateScope(open: _open, child: widget.child);
+}
+
+class _AppearGateScope extends InheritedWidget {
+  final bool open;
+  const _AppearGateScope({required this.open, required super.child});
+  @override
+  bool updateShouldNotify(_AppearGateScope old) => open != old.open;
+}
+
 /// [AppearOnMount] — оборачивает child и при первом монтировании
 /// плавно выводит его на экран: short fade-in (0→1) + лёгкий
 /// slide вверх на ~12px. Делается строго один раз — при следующих
 /// rebuild'ах виджет уже находится в финальном состоянии.
 ///
-/// Зачем: юзер просил, чтобы карточки в списках Actions/Repos
-/// не «выскакивали» резко при первой загрузке. С этим виджетом
-/// первый набор карточек появляется каскадом: индекс N стартует
-/// анимацию с задержкой `staggerMs * N` (по умолчанию 35мс), что
-/// даёт волну сверху вниз ≈ 200мс для первых 5-6 элементов и
-/// быстрое появление всего остального.
+/// Если в дереве выше есть [AppearGate] и его окно уже закрыто,
+/// `AppearOnMount` сразу рендерит child в финальном состоянии без
+/// анимации — это убирает fade-in при скролле в `ListView.builder`.
 class AppearOnMount extends StatefulWidget {
   final Widget child;
   /// Задержка перед стартом анимации (для шахматной/каскадной
@@ -529,10 +593,21 @@ class _AppearOnMountState extends State<AppearOnMount>
     vsync: this,
     duration: widget.duration,
   );
+  bool _scheduled = false;
 
   @override
-  void initState() {
-    super.initState();
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_scheduled) return;
+    _scheduled = true;
+    // Если родительский AppearGate уже закрыл своё окно (юзер уже
+    // прокручивает список, а не смотрит первую отрисовку) — сразу
+    // в финальное состояние, без анимации. Это и убирает «плавное
+    // появление при прокрутке».
+    if (!AppearGate.isOpen(context)) {
+      _ctrl.value = 1.0;
+      return;
+    }
     // Задержка через Future.delayed: легче чем второй контроллер.
     // Если виджет за это время дисmount'ился — пропускаем forward.
     Future.delayed(widget.delay, () {

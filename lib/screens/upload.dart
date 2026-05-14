@@ -1,8 +1,8 @@
 import 'dart:typed_data';
 import 'package:archive/archive.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import '../widgets/m3_loading.dart';
-import '../widgets/file_picker_sheet.dart';
 
 import '../iconify.dart';
 import '../navigation.dart';
@@ -100,22 +100,29 @@ class _UploadScreenState extends State<UploadScreen> {
       _pickError = null;
     });
     try {
-      // Юзер просил собственную панель выбора файлов вместо системного
-      // Android-пикера. Открываем bottom-sheet [pickFileBottomSheet]
-      // (см. lib/widgets/file_picker_sheet.dart). Внутри — навигация
-      // по папкам (Download / Documents / DCIM / папка приложения),
-      // фильтрация только .zip, и fallback на системный picker через
-      // кнопку «Системная панель», если scoped storage не пускает
-      // напрямую в Downloads.
-      final picked = await pickFileBottomSheet(
-        context,
+      // Юзер передумал и попросил вернуть СИСТЕМНУЮ панель выбора
+      // файлов вместо нашей кастомной: «панель выбора файлов убери,
+      // пусть будет системная!!!! я про ту панель что при заливке
+      // файлов». Используем `file_picker` напрямую — это нативный
+      // Android Storage Access Framework / iOS document picker.
+      final res = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
         allowedExtensions: const ['zip'],
+        withData: true,
       );
-      if (picked == null) {
+      if (res == null || res.files.isEmpty) {
         setState(() => _picking = false);
         return;
       }
-      final bytes = picked.bytes;
+      final f = res.files.first;
+      final bytes = f.bytes;
+      if (bytes == null) {
+        setState(() {
+          _picking = false;
+          _pickError = 'Не удалось прочитать файл.';
+        });
+        return;
+      }
       final archive = ZipDecoder().decodeBytes(bytes);
       final files = <String, Uint8List>{};
       for (final entry in archive) {
@@ -134,10 +141,10 @@ class _UploadScreenState extends State<UploadScreen> {
       // strip common single root prefix if any
       _stripCommonRoot(files);
       AppState.I.stagedFiles = files;
-      AppState.I.stagedZipName = picked.name;
+      AppState.I.stagedZipName = f.name;
       AppState.I.touch();
       setState(() {
-        _zipName = picked.name;
+        _zipName = f.name;
         _picking = false;
       });
     } catch (e) {

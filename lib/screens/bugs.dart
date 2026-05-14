@@ -199,18 +199,25 @@ class _BugsScreenState extends State<BugsScreen> {
   }
 
   /// Фаза кнопки скачивания. Переходы между фазами рендерятся
-  /// плавно внутри _RingArchiveBtn (цвет ринга и кросс-фейд иконки).
+  /// плавно внутри _RingArchiveBtn — иконка и спиннер кросс-фейдятся,
+  /// цвет спиннера плавно твинится между акцентом и зелёным.
   ArchiveBtnPhase _archivePhase = ArchiveBtnPhase.idle;
   double _headerH = 0;
 
-  /// Скачивание архива багов с живой анимацией кнопки:
-  ///   1. tap → phase = loading: кольцо крутится, иконка download.
-  ///   2. Работа + гарантия минимум 2 сек (чтобы юзер увидел
-  ///      вертушку; иначе zip собирается за ~50мс и рендер «промигивает»).
-  ///   3a. Пусто или ошибка → сразу idle (кольцо плавно гаснет).
-  ///   3b. Успех → phase = success: кольцо плавно зеленеет и замирает,
-  ///       иконка кросс-фейдит в галочку; после ~1000мс — плавный
-  ///       возврат в idle.
+  /// Скачивание архива багов с живой анимацией кнопки. Поведение,
+  /// которое прямо просил юзер:
+  ///   1. tap → phase = loading: иконка ИСЧЕЗАЕТ, на её месте появляется
+  ///      спиннер акцентного цвета.
+  ///   2. Работа + гарантия минимум 700мс (чтобы юзер увидел кручение
+  ///      акцентного спиннера до того, как он позеленеет; иначе zip
+  ///      собирается за ~50мс и фаза loading «промигивает»).
+  ///   3a. Пусто или ошибка → плавный возврат в idle (спиннер гаснет,
+  ///      иконка плавно проявляется).
+  ///   3b. Успех → phase = success: ТОТ ЖЕ спиннер продолжает крутиться,
+  ///      но его цвет плавно тwinится с акцента на зелёный (НИКАКОЙ
+  ///      галочки — юзер прямо просил без неё). Зелёный спиннер крутится
+  ///      ровно 2 секунды, а потом — плавный возврат в idle (спиннер
+  ///      гаснет, иконка снова появляется).
   Future<void> _runArchive() async {
     if (_archivePhase != ArchiveBtnPhase.idle) return;
     setState(() => _archivePhase = ArchiveBtnPhase.loading);
@@ -223,7 +230,11 @@ class _BugsScreenState extends State<BugsScreen> {
       error = e;
     }
     final elapsed = DateTime.now().difference(startedAt);
-    const minDuration = Duration(milliseconds: 2000);
+    // Минимум 700мс на loading — чтобы пользователь успел увидеть, как
+    // крутится акцентный спиннер ДО того, как он позеленеет. Иначе
+    // зип собирается за ~50мс и переход loading→success происходит
+    // моментально, без визуального смысла.
+    const minDuration = Duration(milliseconds: 700);
     if (elapsed < minDuration) {
       await Future.delayed(minDuration - elapsed);
     }
@@ -232,13 +243,17 @@ class _BugsScreenState extends State<BugsScreen> {
     final isSuccess =
         error == null && res != null && !res.empty;
     if (!isSuccess) {
-      // Пусто/ошибка — плавный возврат в idle (кольцо гаснет).
+      // Пусто/ошибка — плавный возврат в idle (спиннер гаснет,
+      // иконка плавно проявляется).
       setState(() => _archivePhase = ArchiveBtnPhase.idle);
       return;
     }
-    // Успех: кольцо плавно зеленеет, иконка кросс-фейдит в галочку.
+    // Успех: тот же спиннер продолжает крутиться, но его цвет плавно
+    // твинится с акцента на зелёный. «Крутится ещё 2 секунды зелёным»
+    // — это юзерское требование (см. doc-комментарий выше). Никакой
+    // галочки/чека на этом этапе нет, чтобы не пугать.
     setState(() => _archivePhase = ArchiveBtnPhase.success);
-    await Future.delayed(const Duration(milliseconds: 1000));
+    await Future.delayed(const Duration(milliseconds: 2000));
     if (!mounted) return;
     setState(() => _archivePhase = ArchiveBtnPhase.idle);
   }
@@ -496,101 +511,92 @@ class _BugsScreenState extends State<BugsScreen> {
 enum ArchiveBtnPhase { idle, loading, success }
 
 /// Круглая кнопка скачивания архива багов с тремя фазами:
-///   - idle: просто иконка загрузки, кольца нет;
-///   - loading: кольцо крутится акцентным цветом (CircularProgressIndicator);
-///   - success: кольцо плавно зеленеет и замирает (фиксированное
-///     кольцо), иконка кросс-фейдит в галочку.
+///   - idle:    видна ТОЛЬКО иконка скачивания. Спиннера нет.
+///   - loading: иконка полностью исчезает (opacity 0), на её месте
+///              крутится спиннер акцентного цвета.
+///   - success: ТОТ ЖЕ спиннер продолжает крутиться (никаких галочек
+///              и чек-иконок — юзер явно просил без них), но его цвет
+///              плавно твинится с акцента на зелёный. Получается:
+///              «крутится ещё 2 секунды зелёным», как и просил юзер.
 ///
-/// Переходы между фазами плавные — оба слоя колец
-/// (loading-спиннер и success-статик) кросс-фейдятся через
-/// AnimatedOpacity, иконка меняется через AnimatedSwitcher.
+/// Переходы плавные:
+///   * иконка ⇄ спиннер — через AnimatedOpacity (один кросс-фейд);
+///   * акцент → зелёный — через TweenAnimationBuilder<Color>, который
+///     при пересборке (фаза сменилась) плавно интерполирует цвет.
+///
+/// Историческая справка: раньше тут был ещё слой «завершённого»
+/// зелёного кольца + иконка-чек в AnimatedSwitcher. Юзер жаловался:
+/// «иконка остаётся и под ней появляется анимация, ещё эта зелёная
+/// галочка…» — поэтому всё это убрано в пользу одного спиннера,
+/// который меняет цвет.
 class _RingArchiveBtn extends StatelessWidget {
   final ArchiveBtnPhase phase;
   final VoidCallback onTap;
   const _RingArchiveBtn({required this.phase, required this.onTap});
 
-  static const Duration _ringDur = Duration(milliseconds: 320);
-  static const Duration _iconDur = Duration(milliseconds: 280);
+  static const Duration _fadeDur = Duration(milliseconds: 320);
+  static const Duration _colorDur = Duration(milliseconds: 420);
 
   @override
   Widget build(BuildContext context) {
     final pal = context.pal;
-    final isLoading = phase == ArchiveBtnPhase.loading;
+    final isIdle = phase == ArchiveBtnPhase.idle;
     final isSuccess = phase == ArchiveBtnPhase.success;
+    // Целевой цвет спиннера: в success — зелёный, иначе (loading и
+    // idle, где спиннер всё равно невидим) — акцентный. Переход
+    // loading→success плавно интерполируется через TweenAnimationBuilder.
+    final spinnerColor =
+        isSuccess ? AppColors.green : AppColors.accent;
     return PressScale(
-      onTap: phase == ArchiveBtnPhase.idle ? onTap : null,
+      onTap: isIdle ? onTap : null,
       scale: 0.92,
       // 36×36 — тот же бокс, что у IconBtn/RotatingRefreshBtn на других
-      // экранах. Внутреннее кольцо 30×30 и иконка 22 — оставляем
-      // визуальный «прицел» вокруг иконки.
+      // экранах. Внутренний спиннер 30×30 и иконка 22 — визуальный
+      // «прицел» вокруг иконки.
       child: SizedBox(
         width: 36,
         height: 36,
         child: Stack(
           alignment: Alignment.center,
           children: [
-            // Слой 1: «крутящийся» индикатор — виден в loading.
-            // При переходе loading→idle/success плавно гаснет
-            // (CircularProgressIndicator продолжает крутиться во время fade-out).
+            // Спиннер — виден в loading И success. При переходе
+            // loading→success свой opacity не меняет (1.0 в обеих
+            // фазах), но цвет плавно твинится с акцента на зелёный.
+            // При переходе success→idle (или loading→idle) — гаснет.
             AnimatedOpacity(
-              duration: _ringDur,
+              duration: _fadeDur,
               curve: Curves.easeOutCubic,
-              opacity: isLoading ? 1.0 : 0.0,
+              opacity: isIdle ? 0.0 : 1.0,
               child: SizedBox(
                 width: 30,
                 height: 30,
-                child: M3LoadingIndicator(
-                  strokeWidth: 2.5,
-                  strokeCap: StrokeCap.round,
-                  color: AppColors.accent,
-                  backgroundColor: pal.cont2,
+                child: TweenAnimationBuilder<Color?>(
+                  duration: _colorDur,
+                  curve: Curves.easeInOutCubic,
+                  tween: ColorTween(end: spinnerColor),
+                  builder: (ctx, color, _) => M3LoadingIndicator(
+                    strokeWidth: 2.5,
+                    strokeCap: StrokeCap.round,
+                    color: color ?? spinnerColor,
+                    backgroundColor: pal.cont2,
+                  ),
                 ),
               ),
             ),
-            // Слой 2: фиксированное «завершённое» кольцо в success-фазе.
-            // Цвет и прозрачность анимируются: в idle/loading он невидим,
-            // в success — плавно проявляется зелёным кольцом.
+            // Иконка «solar:download-square-bold». Видна ТОЛЬКО в idle —
+            // в loading/success полностью скрыта (opacity 0). Юзер
+            // жаловался: «иконка остаётся и под ней появляется
+            // анимация» — теперь иконка плавно ИСЧЕЗАЕТ одновременно
+            // с появлением спиннера.
             AnimatedOpacity(
-              duration: _ringDur,
+              duration: _fadeDur,
               curve: Curves.easeOutCubic,
-              opacity: isSuccess ? 1.0 : 0.0,
-              child: Container(
-                width: 30,
-                height: 30,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  border: Border.all(color: AppColors.green, width: 2.5),
-                ),
+              opacity: isIdle ? 1.0 : 0.0,
+              child: Iconify(
+                'solar:download-square-bold',
+                size: 22,
+                color: pal.text,
               ),
-            ),
-            // Слой 3: иконка. Кросс-фейд между download и check.
-            // Ключи обязательны — без них AnimatedSwitcher не поймёт,
-            // что виджет сменился. Оба варианта — size: 22, как у всех
-            // остальных кнопок в заголовках экранов.
-            AnimatedSwitcher(
-              duration: _iconDur,
-              switchInCurve: Curves.easeOutCubic,
-              switchOutCurve: Curves.easeOutCubic,
-              transitionBuilder: (child, anim) => FadeTransition(
-                opacity: anim,
-                child: ScaleTransition(
-                  scale: Tween<double>(begin: 0.7, end: 1.0).animate(anim),
-                  child: child,
-                ),
-              ),
-              child: isSuccess
-                  ? const Iconify(
-                      'solar:check-circle-bold',
-                      key: ValueKey('success'),
-                      size: 22,
-                      color: AppColors.green,
-                    )
-                  : Iconify(
-                      'solar:download-square-bold',
-                      key: const ValueKey('idle'),
-                      size: 22,
-                      color: pal.text,
-                    ),
             ),
           ],
         ),
