@@ -320,3 +320,152 @@ class _M3LinearPainter extends CustomPainter {
     return wavy && old.wavePhase != wavePhase;
   }
 }
+
+/// Текстовый виджет с «живой» сменой содержимого: при изменении
+/// `text` старая строка плавно уезжает вверх и растворяется, а новая
+/// поднимается снизу из прозрачности — ровно как у показаний таймера
+/// в современных Material 3 экранах. Используется для счётчиков
+/// в стиле «обновлено 3с назад», где цифры тикают каждую секунду
+/// и должны меняться красиво, а не дёргаться.
+///
+/// Анимируется текст целиком (а не отдельные цифры) — это даёт
+/// единый смазанный «лифт» строки и корректно обрабатывает смену
+/// длины (например, «9с» → «10с» или «59с» → «1м»), не «разваливаясь»
+/// на отдельные сдвинутые символы.
+class RisingText extends StatefulWidget {
+  final String text;
+  final TextStyle? style;
+  final Duration duration;
+  final Curve curve;
+  final TextAlign textAlign;
+
+  /// Доля высоты глифа, на которую старый/новый текст сдвигаются
+  /// по вертикали при анимации. 0.6 даёт «солидное» движение, не
+  /// слишком резкое и не слишком ленивое.
+  final double slideFraction;
+
+  const RisingText({
+    super.key,
+    required this.text,
+    this.style,
+    this.duration = const Duration(milliseconds: 360),
+    this.curve = Curves.easeOutCubic,
+    this.textAlign = TextAlign.start,
+    this.slideFraction = 0.6,
+  });
+
+  @override
+  State<RisingText> createState() => _RisingTextState();
+}
+
+class _RisingTextState extends State<RisingText>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl = AnimationController(
+    vsync: this,
+    duration: widget.duration,
+    value: 1.0,
+  );
+  late String _current;
+  String? _previous;
+
+  @override
+  void initState() {
+    super.initState();
+    _current = widget.text;
+  }
+
+  @override
+  void didUpdateWidget(covariant RisingText old) {
+    super.didUpdateWidget(old);
+    if (old.duration != widget.duration) {
+      _ctrl.duration = widget.duration;
+    }
+    if (old.text != widget.text) {
+      _previous = _current;
+      _current = widget.text;
+      _ctrl.forward(from: 0);
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final style = widget.style;
+    final fontSize = style?.fontSize ?? DefaultTextStyle.of(context).style.fontSize ?? 14.0;
+    final slide = fontSize * widget.slideFraction;
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (_, __) {
+        final t = widget.curve.transform(_ctrl.value);
+        // На завершённой анимации (t == 1) или если предыдущего
+        // текста не было (первый кадр) — рисуем только текущую строку,
+        // без Stack/ClipRect. Это даёт нативный layout и нулевой
+        // оверхед, пока секунда не тикнула.
+        if (t >= 1.0 || _previous == null) {
+          return Text(
+            _current,
+            style: style,
+            textAlign: widget.textAlign,
+            maxLines: 1,
+            softWrap: false,
+          );
+        }
+        return ClipRect(
+          child: Stack(
+            alignment: widget.textAlign == TextAlign.end
+                ? AlignmentDirectional.centerEnd
+                : AlignmentDirectional.centerStart,
+            children: [
+              // Невидимый «распорка»: гарантирует, что Stack займёт
+              // ширину/высоту самой широкой из двух строк, иначе
+              // Transform.translate выходит за границы layout'а
+              // и текст «обрезается» соседним виджетом.
+              Opacity(
+                opacity: 0,
+                child: Text(
+                  _previous!.length >= _current.length ? _previous! : _current,
+                  style: style,
+                  maxLines: 1,
+                  softWrap: false,
+                ),
+              ),
+              // Старый текст уезжает вверх и тает.
+              Transform.translate(
+                offset: Offset(0, -slide * t),
+                child: Opacity(
+                  opacity: 1 - t,
+                  child: Text(
+                    _previous!,
+                    style: style,
+                    textAlign: widget.textAlign,
+                    maxLines: 1,
+                    softWrap: false,
+                  ),
+                ),
+              ),
+              // Новый текст приезжает снизу и проявляется.
+              Transform.translate(
+                offset: Offset(0, slide * (1 - t)),
+                child: Opacity(
+                  opacity: t,
+                  child: Text(
+                    _current,
+                    style: style,
+                    textAlign: widget.textAlign,
+                    maxLines: 1,
+                    softWrap: false,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}

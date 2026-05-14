@@ -326,9 +326,15 @@ class _BugsScreenState extends State<BugsScreen> {
               }
             },
             children: [
-              // Title row
+              // Title row. Внутренний `top: 4` синхронизирован с
+              // Profile и Actions (там тоже +4 поверх 8 у самого
+              // StickyTabHeader/scroll) — чтобы заголовок «Баги»
+              // стоял на той же Y-координате, что «Профиль» и
+              // «Actions». Юзер жаловался: «заголовки в разделах
+              // баги, профиль, actions почему-то везде на разной
+              // высоте как будто».
               Padding(
-                padding: const EdgeInsets.fromLTRB(18, 0, 18, 12),
+                padding: const EdgeInsets.fromLTRB(18, 4, 18, 12),
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
@@ -363,6 +369,11 @@ class _BugsScreenState extends State<BugsScreen> {
                         ],
                       ),
                     ),
+                    // Размеры кнопок в заголовке унифицированы:
+                    // 36×36 бокс, 22 иконка — те же, что у
+                    // RotatingRefreshBtn на Actions и у переключателя
+                    // темы на Profile. Раньше «+» был 38/28, _RingArchiveBtn
+                    // 38/22 — отсюда разнобой иконок между экранами.
                     _RingArchiveBtn(
                       phase: _archivePhase,
                       onTap: _runArchive,
@@ -370,8 +381,8 @@ class _BugsScreenState extends State<BugsScreen> {
                     const SizedBox(width: 2),
                     IconBtn(
                       icon: 'solar:add-circle-bold',
-                      iconSize: 28,
-                      size: 38,
+                      iconSize: 22,
+                      size: 36,
                       color: AppColors.accent,
                       onTap: _openAddPop,
                     ),
@@ -498,9 +509,12 @@ class _RingArchiveBtn extends StatelessWidget {
     return PressScale(
       onTap: phase == ArchiveBtnPhase.idle ? onTap : null,
       scale: 0.92,
+      // 36×36 — тот же бокс, что у IconBtn/RotatingRefreshBtn на других
+      // экранах. Внутреннее кольцо 30×30 и иконка 22 — оставляем
+      // визуальный «прицел» вокруг иконки.
       child: SizedBox(
-        width: 38,
-        height: 38,
+        width: 36,
+        height: 36,
         child: Stack(
           alignment: Alignment.center,
           children: [
@@ -512,8 +526,8 @@ class _RingArchiveBtn extends StatelessWidget {
               curve: Curves.easeOutCubic,
               opacity: isLoading ? 1.0 : 0.0,
               child: SizedBox(
-                width: 32,
-                height: 32,
+                width: 30,
+                height: 30,
                 child: M3LoadingIndicator(
                   strokeWidth: 2.5,
                   strokeCap: StrokeCap.round,
@@ -530,8 +544,8 @@ class _RingArchiveBtn extends StatelessWidget {
               curve: Curves.easeOutCubic,
               opacity: isSuccess ? 1.0 : 0.0,
               child: Container(
-                width: 32,
-                height: 32,
+                width: 30,
+                height: 30,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   border: Border.all(color: AppColors.green, width: 2.5),
@@ -540,7 +554,8 @@ class _RingArchiveBtn extends StatelessWidget {
             ),
             // Слой 3: иконка. Кросс-фейд между download и check.
             // Ключи обязательны — без них AnimatedSwitcher не поймёт,
-            // что виджет сменился.
+            // что виджет сменился. Оба варианта — size: 22, как у всех
+            // остальных кнопок в заголовках экранов.
             AnimatedSwitcher(
               duration: _iconDur,
               switchInCurve: Curves.easeOutCubic,
@@ -562,7 +577,7 @@ class _RingArchiveBtn extends StatelessWidget {
                   : Iconify(
                       'solar:download-square-bold',
                       key: const ValueKey('idle'),
-                      size: 24,
+                      size: 22,
                       color: pal.text,
                     ),
             ),

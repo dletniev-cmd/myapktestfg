@@ -67,7 +67,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // header
+                // header. top: 4 + scroll-view top (=safeArea+8) даёт
+                // 12px от safe-area до заголовка — то же значение, что
+                // у Actions (_LiveHead Padding top:4 поверх StickyTabHeader
+                // top:8) и у Bugs (теперь тоже Padding top:4 поверх
+                // StickyTabHeader top:8). Юзер прямо жаловался: «заголовки
+                // в разделах баги, профиль, actions почему-то везде на
+                // разной высоте». bottom:18 — стандартный отступ перед
+                // первой карточкой/секцией контента.
                 Padding(
                   padding: const EdgeInsets.only(bottom: 18, top: 4),
               child: Row(
@@ -75,10 +82,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   const Expanded(
                     child: Text(
                       'Профиль',
+                      // height:1.15 — то же, что у заголовков Actions и
+                      // Bugs, чтобы базовая линия текста стояла
+                      // одинаково на всех экранах.
                       style: TextStyle(
                         fontSize: 22,
                         fontWeight: FontWeight.w700,
                         letterSpacing: -.4,
+                        height: 1.15,
                       ),
                     ),
                   ),

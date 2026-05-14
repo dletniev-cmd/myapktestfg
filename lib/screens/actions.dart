@@ -49,28 +49,24 @@ void _detachLiveTick() {
 
 class _ActionsScreenState extends State<ActionsScreen>
     with TickerProviderStateMixin {
-  /// Идёт ли inflight-запрос (любой — авто или ручной). Используется
-  /// только для дебаунса, чтобы не пускать второй параллельный
-  /// `_refresh()`.
   bool _loading = false;
-
-  /// Юзер вручную нажал кнопку обновления. В UI это и переводит
-  /// статус в `working` («Обновление…»). Фоновый авто-рефреш
-  /// (каждые 4 секунды) НЕ выставляет этот флаг — экран остаётся
-  /// в обычном виде, в шапке тихо обновляется счётчик «Xс назад».
+  // _manualLoading == true только пока идёт рефреш, запущенный самим
+  // пользователем через тап по кнопке. Фоновый таймер (каждые 4с) «тихий» —
+  // в этом случае заголовок/статус НЕ показывают «Обновление…». Юзер
+  // просил явно: «сделай чтобы писало обновление только при нажатии на
+  // кнопку. Обновление по факту идёт в фоне, каждые 4 секунды».
   bool _manualLoading = false;
-
-  /// Момент последнего успешного фетча (наш собственный, а не
-  /// время апдейта рана с сервера). Это и есть источник для
-  /// лейбла «Обновлено Xс назад» — он показывает свежесть наших
-  /// данных, не свежесть сборки.
-  DateTime? _lastFetched;
-
   String? _error;
   List<GhRun> _runs = [];
   String _filter = 'all';
   Timer? _autoRefresh;
-  int _refreshSpinCounter = 0;
+  // Время последнего УСПЕШНОГО фонового запроса к API — от этого момента
+  // отсчитывается «Обновлено Nс назад» в статусе _LiveHead. Раньше
+  // мы отнимали время от updatedAt первого рана, но это неправильно:
+  // updatedAt обновляется НЕ на каждый полл GitHub'ом (он меняется только
+  // при реальных изменениях рана), и «Nс назад» мог неожиданно прыгать на «15»
+  // вместо «4». Теперь берём точное время нашего полла.
+  DateTime? _lastFetchAt;
   double _headerH = 0;
 
   // Срез AppState, на который Actions реально реагирует. Без этого
@@ -87,8 +83,6 @@ class _ActionsScreenState extends State<ActionsScreen>
     AppState.I.addListener(_onState);
     _attachLiveTick();
     _restoreCache();
-    // Первый фетч на открытии — НЕ manual, чтобы шапка не
-    // мигнула в «Обновление…» при первом входе на экран.
     _refresh();
     _autoRefresh =
         Timer.periodic(const Duration(seconds: 4), (_) => _refresh());
@@ -133,23 +127,20 @@ class _ActionsScreenState extends State<ActionsScreen>
     }
   }
 
+  /// `manual=true` — рефреш запущен по тапу пользователя по кнопке,
+  /// в этом случае показываем «Обновление…» в заголовке и во время
+  /// запроса крутим spinner на кнопке. По дефолту (`manual=false`) —
+  /// фоновый полл таймером, в UI он НИКАК не виден (юзерское
+  /// требование).
   Future<void> _refresh({bool manual = false}) async {
     final api = AppState.I.api;
     final repo = AppState.I.activeRepo;
     if (api == null || repo == null) return;
-    // Дебаунс: если параллельно идёт авто-рефреш, а юзер тапнул
-    // ручной — апгрейдим статус до manual (показываем «Обновление…»),
-    // но второй запрос не отправляем.
-    if (_loading) {
-      if (manual && !_manualLoading) {
-        setState(() => _manualLoading = true);
-      }
-      return;
-    }
     setState(() {
       _loading = true;
-      _manualLoading = manual;
-      if (manual) _refreshSpinCounter++;
+      if (manual) {
+        _manualLoading = true;
+      }
     });
     try {
       // Лимит 20 последних запусков — по просьбе пользователя. Раньше
@@ -166,7 +157,7 @@ class _ActionsScreenState extends State<ActionsScreen>
         _loading = false;
         _manualLoading = false;
         _error = null;
-        _lastFetched = DateTime.now();
+        _lastFetchAt = DateTime.now();
       });
       AppState.I.cachedRuns = runs;
       AppState.I.cachedRunsRepo = repo.fullName;
@@ -217,10 +208,12 @@ class _ActionsScreenState extends State<ActionsScreen>
     final pal = context.pal;
     final repo = AppState.I.activeRepo;
     final running = _runs.where((r) => r.status != 'completed').length;
-    // «Обновлено Xс назад» считаем от НАШЕГО последнего успешного
-    // фетча (не от времени апдейта рана). Авто-рефреш каждые 4 сек
-    // — счётчик в шапке плавно растёт от 0 до ~4 и сбрасывается.
-    final lastFetchedIso = _lastFetched?.toUtc().toIso8601String();
+    // Статус для индикатора-точки:
+    //   error → красный, live → зелёный (есть активные сборки),
+    //   working → акцент (ТОЛЬКО при ручном рефреше), idle → серый.
+    // Раньше любой `_loading=true` (включая фоновый) переключал в working —
+    // отсюда «постоянно мигающее Обновление». Теперь working только если
+    // _manualLoading.
     final liveStatus = _error != null
         ? _LiveStatus.error
         : (_manualLoading
@@ -245,10 +238,15 @@ class _ActionsScreenState extends State<ActionsScreen>
               _LiveHead(
                 status: liveStatus,
                 running: running,
-                lastUpdatedIso: lastFetchedIso,
-                spinCounter: _refreshSpinCounter,
-                loading: _manualLoading,
-                onRefresh: _loading ? null : () => _refresh(manual: true),
+                lastFetchAt: _lastFetchAt,
+                manualLoading: _manualLoading,
+                // Кнопка обновления:
+                //  * Не реагирует на фоновый _loading — тап доступен даже когда
+                //    бэкграунд-полл в воздухе (иначе кнопка «зависла бы»
+                //    каждые 4 сек).
+                //  * Реагирует на _manualLoading — пока крутится spinner от
+                //    нашего ручного тапа, повторно нажать нельзя.
+                onRefresh: _manualLoading ? null : () => _refresh(manual: true),
               ),
               _ActionsFilter(
                 filter: _filter,
@@ -371,16 +369,14 @@ enum _LiveStatus { live, working, error, idle }
 class _LiveHead extends StatefulWidget {
   final _LiveStatus status;
   final int running;
-  final String? lastUpdatedIso;
-  final int spinCounter;
-  final bool loading;
+  final DateTime? lastFetchAt;
+  final bool manualLoading;
   final VoidCallback? onRefresh;
   const _LiveHead({
     required this.status,
     required this.running,
-    required this.lastUpdatedIso,
-    required this.spinCounter,
-    required this.loading,
+    required this.lastFetchAt,
+    required this.manualLoading,
     required this.onRefresh,
   });
   @override
@@ -405,29 +401,12 @@ class _LiveHeadState extends State<_LiveHead>
         ..reset()
         ..repeat(reverse: true);
     }
-    // Раньше тут крутили _spinCtrl на каждый refresh-тик. Теперь
-    // анимация loading-indicator живёт внутри AnimatedSwitcher на самой
-    // кнопке (см. ниже) и привязана к `widget.loading`, а не к counter.
   }
 
   @override
   void dispose() {
     _dotCtrl.dispose();
     super.dispose();
-  }
-
-  Color _statusColor(AppPalette pal) {
-    switch (widget.status) {
-      case _LiveStatus.live:
-        return const Color(0xFF5DD07A);
-      case _LiveStatus.working:
-        // \u00abОбновление…\u00bb — цвет берётся из акцента темы.
-        return pal.accent;
-      case _LiveStatus.error:
-        return const Color(0xFFFF6B6B);
-      case _LiveStatus.idle:
-        return pal.sub;
-    }
   }
 
   Color _dotColor() {
@@ -444,38 +423,73 @@ class _LiveHeadState extends State<_LiveHead>
   }
 
   /// Текст для БОЛЬШОГО заголовка слева сверху.
-  /// Приоритет: ошибка → активная сборка → ручное обновление → дефолт.
-  /// Авто-рефреш (каждые 4 сек) не выставляет `loading`, поэтому
-  /// заголовок «Идёт сборка» больше не дёргается на «Обновление…»
-  /// при фоновых апдейтах.
+  /// «Обновление…» теперь появляется ТОЛЬКО при ручном тапе по
+  /// кнопке (юзерское требование). Фоновый таймер каждые 4 секунды
+  /// заголовок НЕ дёргает — он стабильно держится на «Идёт сборка»
+  /// (если есть активные раны) или просто «Actions».
   String _titleText() {
     if (widget.status == _LiveStatus.error) return 'Ошибка';
+    if (widget.manualLoading) return 'Обновление…';
     if (widget.running > 0) return 'Идёт сборка';
-    if (widget.loading) return 'Обновление…';
     return 'Actions';
   }
 
-  /// Сколько целых секунд прошло с последнего фетча. Для рендеринга
-  /// «Обновлено Xс назад» — обновляется каждую секунду через
-  /// `_liveSecondTick`, цифра анимируется отдельно.
-  int? _agoSeconds() {
-    if (widget.lastUpdatedIso == null) return null;
-    try {
-      final dt = DateTime.parse(widget.lastUpdatedIso!);
-      final s = DateTime.now().toUtc().difference(dt.toUtc()).inSeconds;
-      return s < 0 ? 0 : s;
-    } catch (_) {
-      return null;
+  /// Префикс статус-строки (всё кроме секундомера). Меняется редко —
+  /// при смене статуса, а не каждую секунду.
+  String _statusPrefix() {
+    switch (widget.status) {
+      case _LiveStatus.error:
+        return 'Ошибка';
+      case _LiveStatus.working:
+        return 'Обновление…';
+      case _LiveStatus.live:
+        // Если активных сборок несколько — показываем счётчик. На
+        // одной — обходимся зелёной точкой + «обновлено N с назад».
+        if (widget.running > 1) return '${widget.running} активных • ';
+        return '';
+      case _LiveStatus.idle:
+        return '';
     }
+  }
+
+  /// Динамический «обновлено N сек назад» — обновляется каждую секунду
+  /// и красиво анимируется через [RisingText]. Возвращает пустую строку
+  /// если ещё не было успешного фетча или текущий статус не показывает
+  /// эту инфу (например, error/working).
+  String _agoText() {
+    if (widget.status == _LiveStatus.error ||
+        widget.status == _LiveStatus.working) {
+      return '';
+    }
+    final last = widget.lastFetchAt;
+    if (last == null) return '';
+    final diff = DateTime.now().difference(last);
+    final secs = diff.inSeconds;
+    // ${secs} в фигурных, потому что следом идёт кириллическая «с» —
+    // Dart парсер съест её как часть имени переменной (Cyrillic letter
+    // continue). Без скобок получаем undefined identifier `secsс`.
+    // ignore: unnecessary_brace_in_string_interps
+    if (secs < 60) return 'обновлено ${secs}с назад';
+    if (secs < 3600) return 'обновлено ${diff.inMinutes}м назад';
+    if (secs < 86400) return 'обновлено ${diff.inHours}ч назад';
+    return 'обновлено ${diff.inDays}д назад';
   }
 
   @override
   Widget build(BuildContext context) {
     final pal = context.pal;
-    final stColor = _statusColor(pal);
     final dotC = _dotColor();
     final pulse = widget.status == _LiveStatus.live ||
         widget.status == _LiveStatus.working;
+    final subStyle = TextStyle(
+      fontSize: 12.5,
+      fontWeight: FontWeight.w500,
+      color: pal.sub,
+      // Tabular figures — все цифры одинаковой ширины. Без этого «9с»
+      // → «10с» немного «шевелится» из-за пропорциональных глифов.
+      fontFeatures: const [FontFeature.tabularFigures()],
+      height: 1.2,
+    );
     return Padding(
       padding: const EdgeInsets.fromLTRB(2, 4, 2, 18),
       child: Row(
@@ -488,11 +502,9 @@ class _LiveHeadState extends State<_LiveHead>
               children: [
                 // БОЛЬШОЙ заголовок: Actions / Обновление… / Идёт сборка
                 // / Ошибка. AnimatedSwitcher делает плавную cross-fade
-                // + горизонтальный size-tween (текст не «рвётся», а
-                // мягко расширяется/сжимается до новой ширины).
-                // layoutBuilder с Alignment.centerLeft прижимает оба
-                // фрейма к левому краю — иначе при разной ширине старого
-                // и нового текста они визуально «прыгают» к центру.
+                // + горизонтальный size-tween. ВАЖНО: «Обновление…»
+                // появляется только при manualLoading=true, поэтому
+                // фоновый автополл каждые 4с заголовок не дёргает.
                 AnimatedSwitcher(
                   duration: const Duration(milliseconds: 340),
                   switchInCurve: Curves.easeOutCubic,
@@ -517,11 +529,6 @@ class _LiveHeadState extends State<_LiveHead>
                   },
                   child: Text(
                     _titleText(),
-                    // ВАЖНО: ключуемся по самому тексту заголовка,
-                    // а не по статусу: статус может оставаться
-                    // `working`, пока заголовок переходит с
-                    // «Обновление…» обратно на «Идёт сборка» —
-                    // нам нужно ловить именно смену *текста*.
                     key: ValueKey<String>(_titleText()),
                     style: TextStyle(
                       fontSize: 22,
@@ -536,12 +543,8 @@ class _LiveHeadState extends State<_LiveHead>
                   ),
                 ),
                 const SizedBox(height: 6),
-                AnimatedDefaultTextStyle(
-                  duration: const Duration(milliseconds: 320),
-                  style: TextStyle(
-                      fontSize: 12.5,
-                      fontWeight: FontWeight.w500,
-                      color: stColor),
+                DefaultTextStyle.merge(
+                  style: subStyle,
                   child: Row(children: [
                     AnimatedBuilder(
                       animation: _dotCtrl,
@@ -566,39 +569,60 @@ class _LiveHeadState extends State<_LiveHead>
                       },
                     ),
                     const SizedBox(width: 7),
-                    Flexible(
-                      // Сабтитл — кросс-фейд по статусу. Анимация
-                      // запускается ТОЛЬКО при смене состояния
-                      // (live ↔ working ↔ idle), а внутри
-                      // секундный счётчик «Xс назад» анимируется
-                      // отдельно через _AnimatedAgoLabel.
-                      child: AnimatedSwitcher(
-                        duration: const Duration(milliseconds: 280),
-                        switchInCurve: Curves.easeOutCubic,
-                        switchOutCurve: Curves.easeInCubic,
-                        transitionBuilder: (child, anim) {
-                          return FadeTransition(
-                            opacity: anim,
-                            child: SizeTransition(
-                              sizeFactor: anim,
-                              axis: Axis.horizontal,
-                              axisAlignment: -1,
-                              child: child,
+                    // Префикс ("Обновление…" / "Ошибка" / "3 активных • ").
+                    // Меняется редко — оборачиваем в AnimatedSwitcher
+                    // с cross-fade. Не используем RisingText, потому
+                    // что префикс это не цифра, а название статуса.
+                    AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 260),
+                      switchInCurve: Curves.easeOutCubic,
+                      switchOutCurve: Curves.easeInCubic,
+                      transitionBuilder: (child, anim) => FadeTransition(
+                        opacity: anim,
+                        child: SizeTransition(
+                          sizeFactor: anim,
+                          axis: Axis.horizontal,
+                          axisAlignment: -1,
+                          child: child,
+                        ),
+                      ),
+                      layoutBuilder:
+                          (currentChild, previousChildren) => Stack(
+                        alignment: Alignment.centerLeft,
+                        children: [
+                          ...previousChildren,
+                          if (currentChild != null) currentChild,
+                        ],
+                      ),
+                      child: _statusPrefix().isEmpty
+                          ? const SizedBox.shrink(key: ValueKey('empty'))
+                          : Text(
+                              _statusPrefix(),
+                              key: ValueKey<String>(_statusPrefix()),
+                              maxLines: 1,
+                              softWrap: false,
                             ),
+                    ),
+                    // Живой «обновлено Nс назад» — RisingText ребилдит
+                    // только сам себя, тикает раз в секунду через
+                    // глобальный _liveSecondTick, и каждый раз когда
+                    // строка меняется (например «3с» → «4с») он
+                    // плавно поднимает текст вверх + растворяет старый,
+                    // и новый рождается снизу. Именно ту анимацию
+                    // юзер просил: «одна уезжает вверх плавно
+                    // растворяясь, в другая выкзет снизу тоже выходя
+                    // из растворения, постепенно появляясь».
+                    Flexible(
+                      child: ValueListenableBuilder<int>(
+                        valueListenable: _liveSecondTick,
+                        builder: (_, __, ___) {
+                          final ago = _agoText();
+                          if (ago.isEmpty) return const SizedBox.shrink();
+                          return RisingText(
+                            text: ago,
+                            style: subStyle,
                           );
                         },
-                        layoutBuilder:
-                            (currentChild, previousChildren) => Stack(
-                          alignment: Alignment.centerLeft,
-                          children: [
-                            ...previousChildren,
-                            if (currentChild != null) currentChild,
-                          ],
-                        ),
-                        child: KeyedSubtree(
-                          key: ValueKey<_LiveStatus>(widget.status),
-                          child: _buildSubtitle(),
-                        ),
                       ),
                     ),
                   ]),
@@ -607,125 +631,18 @@ class _LiveHeadState extends State<_LiveHead>
             ),
           ),
           const SizedBox(width: 12),
-          // Юзер прямо просил: «убери подложку у кнопки обновить на
-          // экране Actions, и сделай одинаковым размером как и у кнопки
-          // в списке репо». RotatingRefreshBtn с дефолтами (size=36,
-          // iconSize=22) — это ровно та же кнопка, что и в repos.dart
-          // и других экранах. Без `pal.cont` подложки.
+          // RotatingRefreshBtn с дефолтами (size=36, iconSize=22) —
+          // ровно такие же размеры, как у кнопок в bugs.dart и
+          // profile.dart (юзер просил «размеры иконок одинаковые»).
+          // Spinner крутится ТОЛЬКО при ручном рефреше, фоновый
+          // полл не подсвечивается (тоже юзерское требование).
           RotatingRefreshBtn(
-            spinning: widget.loading,
+            spinning: widget.manualLoading,
             onTap: widget.onRefresh,
           ),
         ],
       ),
     );
-  }
-
-  /// Сабтитл по статусу:
-  /// - error → "Ошибка"
-  /// - working (ручное обновление) → "Обновление…"
-  /// - live (есть активная сборка) → "Обновлено Xс назад · N активных"
-  /// - idle (нет активных) → "Обновлено Xс назад"
-  /// - до первого фетча — "Ожидание"
-  Widget _buildSubtitle() {
-    switch (widget.status) {
-      case _LiveStatus.error:
-        return const Text('Ошибка',
-            maxLines: 1, overflow: TextOverflow.ellipsis);
-      case _LiveStatus.working:
-        return const Text('Обновление…',
-            maxLines: 1, overflow: TextOverflow.ellipsis);
-      case _LiveStatus.live:
-      case _LiveStatus.idle:
-        if (widget.lastUpdatedIso == null) {
-          return const Text('Ожидание',
-              maxLines: 1, overflow: TextOverflow.ellipsis);
-        }
-        final tail = widget.status == _LiveStatus.live && widget.running > 0
-            ? ' · ${widget.running} активных'
-            : '';
-        return _AnimatedAgoLabel(
-          getSeconds: _agoSeconds,
-          suffix: tail,
-        );
-    }
-  }
-}
-
-/// Сабтитл «Обновлено Xс назад» с плавной анимацией смены цифры
-/// раз в секунду. Подписывается на `_liveSecondTick`, и при смене
-/// `_agoSeconds()` прокручивает старое значение вверх (fade+slide),
-/// а новое выезжает снизу — эффект «бегущей цифры», как в M3
-/// expressive «динамичных» компонентах.
-class _AnimatedAgoLabel extends StatelessWidget {
-  final int? Function() getSeconds;
-  final String suffix;
-  const _AnimatedAgoLabel({required this.getSeconds, required this.suffix});
-
-  @override
-  Widget build(BuildContext context) {
-    return ValueListenableBuilder<int>(
-      valueListenable: _liveSecondTick,
-      builder: (_, __, ___) {
-        final s = getSeconds() ?? 0;
-        final label = _formatAgo(s);
-        return Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text('Обновлено '),
-            // Анимируем только сам лейбл «Xс/Xм/Xч/Xд» — он и есть
-            // та цифра, что меняется каждую секунду. Остальной
-            // текст статичен и не дёргает анимацию.
-            ClipRect(
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 260),
-                switchInCurve: Curves.easeOutCubic,
-                switchOutCurve: Curves.easeInCubic,
-                transitionBuilder: (child, anim) {
-                  final slide = Tween<Offset>(
-                    begin: const Offset(0, 0.6),
-                    end: Offset.zero,
-                  ).animate(anim);
-                  return FadeTransition(
-                    opacity: anim,
-                    child: SlideTransition(position: slide, child: child),
-                  );
-                },
-                layoutBuilder: (currentChild, previousChildren) => Stack(
-                  alignment: Alignment.centerLeft,
-                  children: [
-                    ...previousChildren,
-                    if (currentChild != null) currentChild,
-                  ],
-                ),
-                child: Text(
-                  label,
-                  key: ValueKey<String>(label),
-                  maxLines: 1,
-                  softWrap: false,
-                ),
-              ),
-            ),
-            Text(' назад$suffix',
-                maxLines: 1, overflow: TextOverflow.ellipsis),
-          ],
-        );
-      },
-    );
-  }
-
-  String _formatAgo(int seconds) {
-    // ignore: unnecessary_brace_in_string_interps
-    if (seconds < 60) return '${seconds}с';
-    final m = seconds ~/ 60;
-    // ignore: unnecessary_brace_in_string_interps
-    if (m < 60) return '${m}м';
-    final h = m ~/ 60;
-    // ignore: unnecessary_brace_in_string_interps
-    if (h < 24) return '${h}ч';
-    final d = h ~/ 24;
-    // ignore: unnecessary_brace_in_string_interps
-    return '${d}д';
   }
 }
 
@@ -1241,13 +1158,13 @@ double computeRunProgress(GhRun run,
   }
 }
 
-/// Полоса прогресса активных ранов (сборка GitHub Actions).
-/// Простая скруглённая полоса: серый трек, фиолетовая активная часть.
-/// Без M3 stop-точки и gap'а — юзер попросил вернуть «старую»
-/// простую полосу (M3-вариант остаётся только при заливке файлов в
-/// профиле). Прогресс плавно интерполируется через
-/// TweenAnimationBuilder, чтобы при пуллинге API раз в 4 секунды
-/// бар не прыгал скачками.
+/// Полоса прогресса активных ранов (сборка GitHub Actions). M3
+/// Expressive linear-индикатор: волнистый активный сегмент со
+/// скруглёнными концами + gap между активной частью и треком
+/// (https://m3.material.io/components/progress-indicators/overview).
+/// Используется тот же wavy-вариант, что и у заливки файлов на
+/// экране Profile — юзер прямо просил «при сборке тоже полоса
+/// прогресса в стиле M3, как при заливке файлов».
 class RunProgressBar extends StatelessWidget {
   final double progress;
   const RunProgressBar({super.key, required this.progress});
@@ -1255,30 +1172,12 @@ class RunProgressBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final pal = context.pal;
-    return RepaintBoundary(
-      child: SizedBox(
-        height: 6,
-        width: double.infinity,
-        child: TweenAnimationBuilder<double>(
-          tween: Tween<double>(begin: 0.0, end: progress.clamp(0.0, 1.0)),
-          duration: const Duration(milliseconds: 800),
-          curve: Curves.easeOutCubic,
-          builder: (_, p, __) {
-            return ClipRRect(
-              borderRadius: BorderRadius.circular(3),
-              child: Stack(
-                children: [
-                  Container(color: pal.cont2),
-                  FractionallySizedBox(
-                    widthFactor: p,
-                    child: Container(color: AppColors.accent),
-                  ),
-                ],
-              ),
-            );
-          },
-        ),
-      ),
+    return M3LinearProgress(
+      progress: progress,
+      activeColor: AppColors.accent,
+      trackColor: pal.cont2,
+      thickness: 6,
+      // wavy: true (по умолчанию) — M3 Expressive «волна».
     );
   }
 }
