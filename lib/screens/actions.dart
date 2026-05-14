@@ -452,27 +452,37 @@ class _LiveHeadState extends State<_LiveHead>
     }
   }
 
-  /// Динамический «обновлено N сек назад» — обновляется каждую секунду
-  /// и красиво анимируется через [RisingText]. Возвращает пустую строку
-  /// если ещё не было успешного фетча или текущий статус не показывает
-  /// эту инфу (например, error/working).
-  String _agoText() {
+  /// Динамический «обновлено N сек назад» — обновляется каждую секунду.
+  /// Возвращает разбивку на три части:
+  ///   prefix «обновлено » (никогда не меняется — статичный Text)
+  ///   value «N»           (меняется каждую секунду — [RisingText])
+  ///   suffix «с назад» (меняется редко при переходе сек/мин/час/дни)
+  ///
+  /// Раньше всё собиралось в одну строку и RisingText анимировали
+  /// весь текст (юзер жаловался: ±анимируется аж весь текст, а
+  /// надо только цифру»). Теперь разделяем части и выводим их
+  /// отдельными виджетами в Row — визуально то же самое «obnovleno Nс
+  /// nazad», но анимируется только цифра.
+  ({String prefix, String value, String suffix})? _agoParts() {
     if (widget.status == _LiveStatus.error ||
         widget.status == _LiveStatus.working) {
-      return '';
+      return null;
     }
     final last = widget.lastFetchAt;
-    if (last == null) return '';
+    if (last == null) return null;
     final diff = DateTime.now().difference(last);
     final secs = diff.inSeconds;
-    // ${secs} в фигурных, потому что следом идёт кириллическая «с» —
-    // Dart парсер съест её как часть имени переменной (Cyrillic letter
-    // continue). Без скобок получаем undefined identifier `secsс`.
-    // ignore: unnecessary_brace_in_string_interps
-    if (secs < 60) return 'обновлено ${secs}с назад';
-    if (secs < 3600) return 'обновлено ${diff.inMinutes}м назад';
-    if (secs < 86400) return 'обновлено ${diff.inHours}ч назад';
-    return 'обновлено ${diff.inDays}д назад';
+    const prefix = 'обновлено ';
+    if (secs < 60) {
+      return (prefix: prefix, value: '$secs', suffix: 'с назад');
+    }
+    if (secs < 3600) {
+      return (prefix: prefix, value: '${diff.inMinutes}', suffix: 'м назад');
+    }
+    if (secs < 86400) {
+      return (prefix: prefix, value: '${diff.inHours}', suffix: 'ч назад');
+    }
+    return (prefix: prefix, value: '${diff.inDays}', suffix: 'д назад');
   }
 
   @override
@@ -612,15 +622,42 @@ class _LiveHeadState extends State<_LiveHead>
                     // юзер просил: «одна уезжает вверх плавно
                     // растворяясь, в другая выкзет снизу тоже выходя
                     // из растворения, постепенно появляясь».
+                    // «Обновлено Nс назад» разбито на три виджета:
+                    //  * Статичный Text(«обновлено ») — не анимируется.
+                    //  * RisingText(«N») — живо поднимает вверх
+                    //    старую цифру и достаёт новую снизу по тикам
+                    //    _liveSecondTick. ImpacthZ — только эта
+                    //    часть ребилдится каждую секунду.
+                    //  * RisingText(«с назад») — почти всегда
+                    //    повторяет себя, анимирует только при переходе
+                    //    с/м/ч/д (раз в минуту/час/сутки).
+                    //
+                    // Юзер жаловался: «анимируется аж весь текст, а надо
+                    // только цифру!!» — именно это исправлено».
                     Flexible(
                       child: ValueListenableBuilder<int>(
                         valueListenable: _liveSecondTick,
                         builder: (_, __, ___) {
-                          final ago = _agoText();
-                          if (ago.isEmpty) return const SizedBox.shrink();
-                          return RisingText(
-                            text: ago,
-                            style: subStyle,
+                          final parts = _agoParts();
+                          if (parts == null) {
+                            return const SizedBox.shrink();
+                          }
+                          return Row(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.baseline,
+                            textBaseline: TextBaseline.alphabetic,
+                            children: [
+                              Text(parts.prefix, style: subStyle),
+                              RisingText(
+                                text: parts.value,
+                                style: subStyle,
+                              ),
+                              const Text(' '),
+                              RisingText(
+                                text: parts.suffix,
+                                style: subStyle,
+                              ),
+                            ],
                           );
                         },
                       ),

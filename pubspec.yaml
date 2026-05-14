@@ -1,7 +1,7 @@
 name: github_pusher
 description: "GitHub Pusher — заливай файлы, отслеживай Actions и скачивай APK прямо с телефона."
 publish_to: 'none'
-version: 1.9.10+73
+version: 1.9.11+74
 
 environment:
   sdk: ^3.5.4

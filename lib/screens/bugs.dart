@@ -319,7 +319,18 @@ class _BugsScreenState extends State<BugsScreen> {
           left: 0,
           right: 0,
           child: StickyTabHeader(
-            padding: const EdgeInsets.fromLTRB(0, 8, 0, 12),
+            // top=1 (а не 8) намеренно: в Actions внутри _LiveHead
+            // под заголовком есть статус-строка («обновлено 2с
+            // назад»), и Column с двумя строчками выходит выше 36px
+            // (высота кнопки рефреша), поэтому Row(center) ставит
+            // заголовок «Идёт сборка» практически в самый верх
+            // StickyTabHeader-блока. У нас же тут только один заголовок
+            // «Баги» — Row(center) бы вытянул его на (36-22)/2 = 7px
+            // вниз. Подрезаем верхний паддинг StickyTabHeader на эти
+            // 7px, чтобы базовая линия «Баги» совпала с «Идёт сборка»
+            // на экране Actions. Юзер прямо просил: «надо сделать
+            // одинаково на ровне с Actions!!!».
+            padding: const EdgeInsets.fromLTRB(0, 1, 0, 12),
             onHeightChanged: (h) {
               if ((h - _headerH).abs() > 0.5) {
                 setState(() => _headerH = h);

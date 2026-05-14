@@ -57,9 +57,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
       children: [
         Positioned.fill(
           child: SingleChildScrollView(
+            // top = safeArea + 1 (а не +8): аналог Bugs — Actions
+            // ставит «Идёт сборка» на topInset+12, потому что слева
+            // Column(title+статус) вытягивает Row выше 36px кнопки.
+            // У нас же справа только кнопка темы 36×36, а слева
+            // только заголовок «Профиль» 22px — Row(center) опускает
+            // заголовок на (36-22)/2 = 7px. Подрезаем верхний паддинг
+            // ScrollView на 7px, чтобы «Профиль» оказался на той же
+            // Y-координате, что «Идёт сборка»/«Actions» на экране
+            // Actions. Юзер: «надо сделать одинаково на ровне с
+            // Actions!!!».
             padding: EdgeInsets.fromLTRB(
               18,
-              MediaQuery.of(context).padding.top + 8,
+              MediaQuery.of(context).padding.top + 1,
               18,
               120,
             ),
