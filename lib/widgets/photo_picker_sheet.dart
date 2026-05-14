@@ -83,59 +83,66 @@ Future<List<Uint8List>?> pickPhotosBottomSheet(
   // анимации, сериализация ответов на UI-треде давала jank.
   // Видимый результат: «панель закрывалась лагая».
   //
-  // Контроллер анимации создаём вручную (чтобы задать свои 380/260мс),
-  // и ОБЯЗАТЕЛЬНО диспоузим его после закрытия шита — showModalBottomSheet
-  // НЕ владеет этим контроллером и не диспоузит его сам. Без этого каждый
-  // открытый пикер лил бы AnimationController + все его листенеры.
-  final navigator = Navigator.of(context);
-  final sheetCtl = AnimationController(
-    vsync: navigator,
+  // Контроллер анимации шита хоистим в переменную: showModalBottomSheet
+  // НЕ диспозит controller, переданный извне (см. willDisposeAnimationController
+  // в _ModalBottomSheetRoute). Раньше тут был инлайновый AnimationController
+  // без ссылки — на каждое открытие пикера утекал Ticker, привязанный
+  // к NavigatorState. В debug-сборке это могло выстрелить ассертом
+  // «ticker was not disposed», в release — медленный лик памяти.
+  final transitionCtrl = AnimationController(
+    vsync: Navigator.of(context),
     duration: const Duration(milliseconds: 380),
     reverseDuration: _kSheetReverseDuration,
   );
-  List<AssetEntity>? assets;
   try {
-    assets = await showModalBottomSheet<List<AssetEntity>>(
+    final assets = await showModalBottomSheet<List<AssetEntity>>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       barrierColor: Colors.black.withValues(alpha: 0.55),
-      transitionAnimationController: sheetCtl,
+      transitionAnimationController: transitionCtrl,
       builder: (_) => _PhotoPickerSheet(maxSelectable: maxSelectable),
     );
-  } finally {
-    sheetCtl.dispose();
-  }
-  if (assets == null) return null;
-  if (assets.isEmpty) return <Uint8List>[];
-  final picked = assets;
-  // 1) Ждём конца reverse-анимации шита + кадр про запас, чтобы UI-тред
-  //    был свободен. Без этого тяжёлый MethodChannel-трафик из originBytes
-  //    приходится на slide-down кадры и пользователь видит лаги.
-  await Future<void>.delayed(
-    _kSheetReverseDuration + const Duration(milliseconds: 40),
-  );
-  // 2) Читаем байты партиями (по 3), чтобы не насыщать MethodChannel/JNI
-  //    и не блокировать UI-тред десериализацией 15+ JPEG'ов одновременно.
-  //    Порядок результатов сохраняется (по индексу asset'а).
-  const int batchSize = 3;
-  final results = List<Uint8List?>.filled(picked.length, null);
-  for (var i = 0; i < picked.length; i += batchSize) {
-    final end = (i + batchSize < picked.length) ? i + batchSize : picked.length;
-    final batch = <Future<void>>[];
-    for (var j = i; j < end; j++) {
-      final idx = j;
-      batch.add(() async {
-        final bytes = await picked[idx].originBytes;
-        results[idx] = bytes;
-      }());
+    if (assets == null) return null;
+    if (assets.isEmpty) return <Uint8List>[];
+    // 1) Ждём конца reverse-анимации шита + кадр про запас, чтобы UI-тред
+    //    был свободен. Без этого тяжёлый MethodChannel-трафик из originBytes
+    //    приходится на slide-down кадры и пользователь видит лаги.
+    await Future<void>.delayed(
+      _kSheetReverseDuration + const Duration(milliseconds: 40),
+    );
+    // 2) Читаем байты партиями (по 3), чтобы не насыщать MethodChannel/JNI
+    //    и не блокировать UI-тред десериализацией 15+ JPEG'ов одновременно.
+    //    Порядок результатов сохраняется (по индексу asset'а).
+    const int batchSize = 3;
+    final results = List<Uint8List?>.filled(assets.length, null);
+    for (var i = 0; i < assets.length; i += batchSize) {
+      final end =
+          (i + batchSize < assets.length) ? i + batchSize : assets.length;
+      final batch = <Future<void>>[];
+      for (var j = i; j < end; j++) {
+        final idx = j;
+        batch.add(() async {
+          final bytes = await assets[idx].originBytes;
+          results[idx] = bytes;
+        }());
+      }
+      await Future.wait(batch);
     }
-    await Future.wait(batch);
+    return <Uint8List>[
+      for (final b in results)
+        if (b != null) b,
+    ];
+  } finally {
+    // Диспозим контроллер ПОСЛЕ полного завершения reverse-анимации шита.
+    // Future.delayed уходит в event loop отдельной задачей — даже при
+    // ранних return / исключениях контроллер гарантированно освободится,
+    // а сама анимация закрытия (которая ещё идёт) не лагнёт от
+    // преждевременного dispose.
+    Future<void>.delayed(
+      _kSheetReverseDuration + const Duration(milliseconds: 80),
+    ).then((_) => transitionCtrl.dispose());
   }
-  return <Uint8List>[
-    for (final b in results)
-      if (b != null) b,
-  ];
 }
 
 /// Полная высота зоны фейда у шапки. Должна совпадать с тем, как ведёт
@@ -179,51 +186,32 @@ class _PhotoPickerSheet extends StatefulWidget {
   State<_PhotoPickerSheet> createState() => _PhotoPickerSheetState();
 }
 
-/// Список-кэш миниатюр на уровне всего шита. Ключ — `asset.id`,
-/// значение — уже декодированный `MemoryImage`. Критически важно для
-/// плавности прокрутки: когда ячейка уходит из viewport'а и возвращается
-/// (напр. скроллинг вперёд-назад), Flutter дестроит `_PhotoCellState`
-/// и создаёт новый — без кэша он снова вызывал бы PhotoManager.
-/// thumbnailDataWithSize (MethodChannel/JNI — десятки мс на вызов)
-/// и передекодировал бы JPEG. На быстром флинге это давало лаги
-/// (пустые ячейки на 50-200мс) и нагрев телефона. С кэшем re-mount
-/// ячейки из кэша — мгновенный.
-///
-/// Стабильный ImageProvider важен ещё и потому, что Flutter использует
-/// `ImageProvider.equals` для поиска в глобальном `ImageCache`. Одинифици-
-/// рованный instance — гарантированный cache hit без повторного декода.
-class _ThumbCache {
-  final Map<String, MemoryImage> _byId = <String, MemoryImage>{};
-  MemoryImage? get(String id) => _byId[id];
-  void put(String id, MemoryImage img) => _byId[id] = img;
-  bool contains(String id) => _byId.containsKey(id);
-  void clear() => _byId.clear();
-}
-
 class _PhotoPickerSheetState extends State<_PhotoPickerSheet> {
   bool _loading = true;
   bool _denied = false;
   List<AssetEntity> _assets = const [];
-  // Порядок выбора — нужен для отображения номеров в бейджах и для
-  // возврата фото в том же порядке, в каком пользователь тапал. Структура
-  // «List для порядка + Map<asset.id, order> для O(1) lookup» — иначе
-  // при каждом rebuild'е сетки (а он случается на каждый тап по
-  // ячейке) делали _selected.indexOf(asset) на КАЖДУЮ из 600
-  // ячеек — 600 × O(N) сканов, больно на медленных Android'ах.
+  // Сохраняем порядок выбора — нужен для отображения номеров в бейджах
+  // и для возврата фото в том же порядке, в каком пользователь тапал.
   final List<AssetEntity> _selected = [];
-  final Map<String, int> _selectedOrders = <String, int>{};
   bool _busy = false;
 
-  // Кэш миниатюр на весь жизненный цикл шита. Делится со всеми
-  // `_PhotoCell` через инжекцию в конструктор. Очищается в `dispose` —
-  // при закрытии пикера выбираемая память освобождается.
-  final _ThumbCache _thumbCache = _ThumbCache();
-
-  @override
-  void dispose() {
-    _thumbCache.clear();
-    super.dispose();
-  }
+  // Кеш декодированных миниатюр по `AssetEntity.id`. Живёт всё время
+  // открытия шита.
+  //
+  // Зачем: `cacheExtent` грида ограничен — ячейка `_PhotoCell` за пределами
+  // буфера демонтируется. При обратной прокрутке ячейка пересоздаётся
+  // и заново зовёт `thumbnailDataWithSize` через MethodChannel + делает
+  // свежий `precacheImage`. Главный фокус: PhotoManager на каждый
+  // запрос возвращает НОВЫЙ `Uint8List` (даже если кадр идентичен),
+  // а `MemoryImage`-ключ кеша картинок завязан на `bytes.hashCode`,
+  // у `Uint8List` он identity-based → новый объект = промах кеша
+  // → JPEG-декод повторяется. На вид это и есть «лаги при прокрутке».
+  //
+  // С кешем повторное появление ячейки происходит мгновенно: тот же
+  // `MemoryImage` → тот же ключ → growable LRU кеша картинок Flutter
+  // отдаёт уже декодированный raster (или быстро его восстанавливает,
+  // без MethodChannel/Binder hop'а).
+  final Map<String, ImageProvider> _thumbCache = {};
 
   // Флаг: «slide-up анимация шита уже завершилась». До этого момента
   // НЕ дёргаем PhotoManager (любой запрос к нему — это MethodChannel/
@@ -310,7 +298,7 @@ class _PhotoPickerSheetState extends State<_PhotoPickerSheet> {
 
   void _toggle(AssetEntity a) {
     final max = widget.maxSelectable;
-    final alreadyOn = _selectedOrders.containsKey(a.id);
+    final alreadyOn = _selected.contains(a);
     // Лимит на выбор: если ячейка ещё не выбрана и лимит исчерпан —
     // игнорируем тап и даём обратную связь виброй (heavyImpact)
     // вместо обычного selectionClick — чтобы юзер физически
@@ -326,14 +314,6 @@ class _PhotoPickerSheetState extends State<_PhotoPickerSheet> {
       } else {
         _selected.add(a);
       }
-      // Перестраиваем мап порядков после мутации списка — это однин
-      // проход по _selected, после чего все последующие lookup'ы O(1).
-      _selectedOrders
-        ..clear()
-        ..addEntries([
-          for (var i = 0; i < _selected.length; i++)
-            MapEntry(_selected[i].id, i + 1),
-        ]);
     });
   }
 
@@ -454,13 +434,16 @@ class _PhotoPickerSheetState extends State<_PhotoPickerSheet> {
       // даёт эффект «впечатанности» к верху/низу — плюс она
       // внутренне хуже списывает fling-жесты (jank при быстрой прокрутке).
       physics: const BouncingScrollPhysics(),
-      // cacheExtent: 800px ≈ ~6 рядов сверху и снизу viewport'а.
-      // Раньше было 200px ≈ 1.5 ряда — при быстром флинге пользователь
-      // выходил за буфер и видел пустые ячейки. С sheet-level кэшем
-      // `_ThumbCache` ранее загруженные миниатюры не теряются при unmount
-      // ячейки, поэтому больший cacheExtent «дешевле»: память всё равно
-      // занята этими thumbnail'ами, а декод не повторяется.
-      cacheExtent: 800,
+      // Меньший cacheExtent (200 вместо 400) — экономим память и
+      // время на декод лишних thumbnail'ов, которые юзер может вообще
+      // не увидеть. 200px ✕ три колонки = ~1.5 ряда в буфере.
+      // Раньше было 200 — это ~1.5 ряда буфера. При флинге GridView
+      // быстро демонтировал ячейки за пределами этого буфера, а при
+      // возврате стартовал полный цикл thumbnail + decode заново.
+      // 600 = ~5 рядов в буфере, плюс провайдеры миниатюр кешируются
+      // в `_thumbCache` (см. выше) → возвраты «дешёвые», даже когда
+      // ячейка успела демонтироваться.
+      cacheExtent: 600,
       addRepaintBoundaries: false,  // делаем их сами внутри _PhotoCell
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: 3,
@@ -470,10 +453,7 @@ class _PhotoPickerSheetState extends State<_PhotoPickerSheet> {
       itemCount: _assets.length,
       itemBuilder: (_, i) {
         final a = _assets[i];
-        // O(1) lookup порядка выбора через карту _selectedOrders. Раньше
-        // на каждый rebuild ячейки делали _selected.indexOf(a) — O(N)
-        // скан на каждую из 600 ячеек.
-        final order = _selectedOrders[a.id];
+        final idx = _selected.indexOf(a);
         return _PhotoCell(
           // ValueKey по id ассета — чтобы ресайкл ячеек в GridView
           // НЕ мигрировал State одной ячейки на другой ассет (иначе старая
@@ -481,9 +461,9 @@ class _PhotoPickerSheetState extends State<_PhotoPickerSheet> {
           key: ValueKey<String>(a.id),
           asset: a,
           gridIndex: i,
-          selectedOrder: order,
+          selectedOrder: idx >= 0 ? idx + 1 : null,
           onTap: () => _toggle(a),
-          cache: _thumbCache,
+          thumbCache: _thumbCache,
         );
       },
     );
@@ -694,17 +674,17 @@ class _PhotoCell extends StatefulWidget {
   final int gridIndex;
   final int? selectedOrder;
   final VoidCallback onTap;
-  /// Sheet-level кэш миниатюр. При re-mount ячейки (когда юзер скроллит
-  /// взад-вперёд) читаем готовый `MemoryImage` отсюда — никаких новых
-  /// MethodChannel-запросов в PhotoManager, никакого передекодирования.
-  final _ThumbCache cache;
+  /// Общий на весь шит кеш провайдеров миниатюр по id ассета.
+  /// При remount-е ячейки (демонтировалась из-за `cacheExtent`)
+  /// провайдер берётся отсюда — без повторного MethodChannel/декода.
+  final Map<String, ImageProvider> thumbCache;
   const _PhotoCell({
     super.key,
     required this.asset,
     required this.gridIndex,
     required this.selectedOrder,
     required this.onTap,
-    required this.cache,
+    required this.thumbCache,
   });
   @override
   State<_PhotoCell> createState() => _PhotoCellState();
@@ -722,11 +702,13 @@ class _PhotoCellState extends State<_PhotoCell> {
   @override
   void initState() {
     super.initState();
-    // FAST PATH: миниатюра уже есть в sheet-level кэше — мгновенно
-    // подхватываем её без MethodChannel-запросов, без стаггера, без
-    // precacheImage. Это критично для плавности скролла: при возврате
-    // в ранее посещённый ряд ячейки заполняются в первом же кадре.
-    final cached = widget.cache.get(widget.asset.id);
+    // Кеш-хит: ячейку уже грузили в этой же сессии шита. Берём
+    // готовый провайдер и рендерим без MethodChannel/декода —
+    // без задержки, без fade-in. Так пропадают «пустые ячейки» при
+    // быстром свайпе обратно вверх (раньше каждая такая ячейка
+    // снова шла через стаггер + ThumbGate + thumbnail + precacheImage,
+    // 50-200мс пустоты на каждой).
+    final cached = widget.thumbCache[widget.asset.id];
     if (cached != null) {
       _provider = cached;
       _ready = true;
@@ -736,11 +718,14 @@ class _PhotoCellState extends State<_PhotoCell> {
   }
 
   Future<void> _kickOff() async {
-    // Лёгкий стаггер ТОЛЬКО при ПЕРВОМ открытии шита (когда кэш пуст)
-    // и ТОЛЬКО для первых 9 ячеек (3x3 — то, что видно в первом кадре).
-    // 0мс / 16мс / 32мс / ... / 128мс. При re-mount во время скролла
-    // initState уже идёт через fast-path (cached != null), сюда мы
-    // не попадаем — поэтому стаггер больше не задерживает прокрутку.
+    // Лёгкий стаггер ТОЛЬКО для первых 9 ячеек (3x3 — то, что видно
+    // в первом кадре после открытия шита). 0мс / 16мс / 32мс / ... / 128мс.
+    // Все остальные ячейки (включая те, что приходят в видимую область
+    // при скролле) грузятся БЕЗ задержки. Раньше было `clamp(0, 12) * 25`
+    // — это давало 300мс задержки ВСЕМ ячейкам с индексом ≥ 12, в том
+    // числе тем, что появляются при скролле. Из-за этого при скролле
+    // фото-пикера ячейки на 300мс оставались пустыми → пользователь
+    // воспринимал это как «лаг при прокрутке».
     if (widget.gridIndex < 9) {
       final delayMs = widget.gridIndex * 16;
       if (delayMs > 0) {
@@ -758,19 +743,6 @@ class _PhotoCellState extends State<_PhotoCell> {
     Uint8List? bytes;
     try {
       if (!mounted) return;
-      // Перепроверяем кэш: пока мы стояли в очереди _ThumbGate, ту же
-      // миниатюру мог загрузить параллельный _PhotoCell (например, если
-      // юзер быстро проскроллил туда-обратно). В этом случае берём её
-      // из кэша и не тратим MethodChannel-вызов.
-      final cached = widget.cache.get(widget.asset.id);
-      if (cached != null) {
-        if (!mounted) return;
-        setState(() {
-          _provider = cached;
-          _ready = true;
-        });
-        return;
-      }
       // 300x300 — комфортный размер для grid-cell ~130px на 2-3x DPR.
       // Меньше — заметная пикселизация, больше — лишний декод.
       bytes = await widget.asset
@@ -780,10 +752,6 @@ class _PhotoCellState extends State<_PhotoCell> {
     }
     if (!mounted || bytes == null) return;
     final provider = MemoryImage(bytes);
-    // Кладём в sheet-level кэш ДО precacheImage — даже если виджет
-    // успеет отмонтироваться (быстрый скролл), миниатюра будет готова
-    // для следующего mount'а той же ячейки.
-    widget.cache.put(widget.asset.id, provider);
     // precacheImage заставляет движок декодировать байты в раст ДО
     // того, как мы покажем Image — иначе первый кадр после монтажа
     // Image-widget'а будет пустой (пока идёт декод), и юзер увидит
@@ -795,6 +763,11 @@ class _PhotoCellState extends State<_PhotoCell> {
       // image-handler'а), без мигания.
     }
     if (!mounted) return;
+    // Сохраняем провайдер в общий кеш шита: следующий mount этой же
+    // ячейки (юзер прокрутил вниз и обратно) возьмёт готовый провайдер
+    // из initState — без повторного MethodChannel-запроса и без
+    // повторного декода.
+    widget.thumbCache[widget.asset.id] = provider;
     setState(() {
       _provider = provider;
       _ready = true;
