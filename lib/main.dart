@@ -23,11 +23,10 @@ Future<void> main() async {
     systemNavigationBarDividerColor: Colors.transparent,
     systemNavigationBarContrastEnforced: false,
   ));
-  // Прогреваем speech_to_text заранее, чтобы первый toggle микрофона
-  // не блокировал UI на инициализации нативного движка.
-  // Не критично, поэтому без await.
+  // Прогреваем локальный движок заранее, чтобы первый toggle микрофона
+  // не блокировал UI на инициализации нативного SpeechRecognizer.
   // ignore: discarded_futures
-  SpeechService.I.init();
+  LocalSpeechBackend.I.ensureInit();
   runApp(const SuflyorApp());
 }
 

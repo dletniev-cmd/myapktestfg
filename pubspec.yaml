@@ -20,6 +20,10 @@ dependencies:
   permission_handler: ^11.3.1
   # Локальное хранение текстов и настроек (скорость, размер шрифта).
   shared_preferences: ^2.3.2
+  # Альтернативный бэкенд распознавания: запись микрофона + Groq Whisper.
+  # `record` даёт стрим PCM с микрофона, `http` — multipart POST на Groq.
+  record: ^5.1.2
+  http: ^1.2.2
 
 dev_dependencies:
   flutter_test:

@@ -12,6 +12,8 @@ class Prefs {
   static const _kLocaleId = 'suflyor.localeId';
   static const _kAutoScroll = 'suflyor.autoScroll';
   static const _kFallbackSpeed = 'suflyor.fallbackSpeed';
+  static const _kSpeechBackend = 'suflyor.speechBackend';
+  static const _kGroqApiKey = 'suflyor.groqApiKey';
 
   SharedPreferences? _prefs;
 
@@ -47,4 +49,19 @@ class Prefs {
       (await _p()).getDouble(_kFallbackSpeed) ?? 28.0;
   Future<void> setFallbackSpeed(double v) async =>
       (await _p()).setDouble(_kFallbackSpeed, v);
+
+  /// Бэкенд распознавания: `'local'` (default) или `'groq'`.
+  Future<String> getSpeechBackend() async =>
+      (await _p()).getString(_kSpeechBackend) ?? 'local';
+  Future<void> setSpeechBackend(String v) async =>
+      (await _p()).setString(_kSpeechBackend, v);
+
+  /// API-ключ Groq, хранится локально в SharedPreferences. Никуда
+  /// больше не уходит — вызовы делает само устройство пользователя.
+  Future<String> getGroqApiKey() async =>
+      (await _p()).getString(_kGroqApiKey) ?? '';
+  Future<void> setGroqApiKey(String v) async =>
+      (await _p()).setString(_kGroqApiKey, v);
+  Future<void> clearGroqApiKey() async =>
+      (await _p()).remove(_kGroqApiKey);
 }

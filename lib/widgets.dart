@@ -85,6 +85,24 @@ class _CircleIconButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    return CircleIconChip(icon: icon, onTap: onTap);
+  }
+}
+
+/// Маленькая «пилюлька»-кнопка с иконкой 38×38 в стиле header-trailing.
+class CircleIconChip extends StatelessWidget {
+  final IconData icon;
+  final VoidCallback? onTap;
+  final Color? color;
+  const CircleIconChip({
+    super.key,
+    required this.icon,
+    this.onTap,
+    this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
     return PressScale(
       onTap: onTap,
       scale: 0.92,
@@ -92,11 +110,11 @@ class _CircleIconButton extends StatelessWidget {
         width: 38,
         height: 38,
         decoration: BoxDecoration(
-          color: AppColors.cont,
+          color: color ?? AppColors.cont,
           borderRadius: BorderRadius.circular(AppRadii.btn),
         ),
         alignment: Alignment.center,
-        child: Icon(icon, color: AppColors.text, size: 18),
+        child: Icon(icon, color: AppColors.text, size: 19),
       ),
     );
   }

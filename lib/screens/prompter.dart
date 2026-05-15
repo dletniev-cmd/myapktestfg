@@ -10,6 +10,7 @@ import 'package:permission_handler/permission_handler.dart';
 import '../prefs.dart';
 import '../speech.dart';
 import '../theme.dart';
+import '../whisper.dart';
 import '../widgets.dart';
 
 /// Экран чтения — основной «телепромптерный» вид.
@@ -55,7 +56,14 @@ class _PrompterScreenState extends State<PrompterScreen>
   bool _autoScrollEnabled = true;
   double _fallbackSpeed = 28.0;
   String _localeId = 'ru_RU';
+  String _backendId = 'local';
+  String _groqApiKey = '';
   bool _settingsLoaded = false;
+
+  // Активный бэкенд распознавания. Может пере-присваиваться при
+  // переключении в настройках, но смену делаем только когда
+  // микрофон выключен — переключение «на лету» некорректно.
+  SpeechBackend _backend = LocalSpeechBackend.I;
 
   // Состояние UI.
   bool _controlsVisible = true;
@@ -74,19 +82,7 @@ class _PrompterScreenState extends State<PrompterScreen>
     _text = widget.text;
     _words = _tokenize(_text);
     _loadSettings();
-    SpeechService.I.recognized.addListener(_onRecognized);
-    SpeechService.I.listening.addListener(_onListeningChanged);
-    SpeechService.I.onError = (msg) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(msg,
-              style: const TextStyle(color: AppColors.text)),
-          backgroundColor: AppColors.cont,
-          duration: const Duration(seconds: 2),
-        ),
-      );
-    };
+    _attachBackendListeners(_backend);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     _scheduleAutoHide();
   }
@@ -97,6 +93,8 @@ class _PrompterScreenState extends State<PrompterScreen>
     final auto = await Prefs.I.getAutoScroll();
     final speed = await Prefs.I.getFallbackSpeed();
     final loc = await Prefs.I.getLocaleId();
+    final backendId = await Prefs.I.getSpeechBackend();
+    final key = await Prefs.I.getGroqApiKey();
     if (!mounted) return;
     setState(() {
       _fontSize = fs;
@@ -104,17 +102,58 @@ class _PrompterScreenState extends State<PrompterScreen>
       _autoScrollEnabled = auto;
       _fallbackSpeed = speed;
       _localeId = loc;
+      _backendId = backendId;
+      _groqApiKey = key;
       _settingsLoaded = true;
       _measurePainter = null;
     });
+    _switchBackend(_pickBackend());
+  }
+
+  SpeechBackend _pickBackend() {
+    if (_backendId == 'groq' && _groqApiKey.isNotEmpty) {
+      WhisperGroqBackend.I.apiKey = _groqApiKey;
+      WhisperGroqBackend.I.language = 'ru';
+      return WhisperGroqBackend.I;
+    }
+    return LocalSpeechBackend.I;
+  }
+
+  void _attachBackendListeners(SpeechBackend b) {
+    b.recognized.addListener(_onRecognized);
+    b.listening.addListener(_onListeningChanged);
+    b.onError = (msg) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(msg,
+              style: const TextStyle(color: AppColors.text)),
+          backgroundColor: AppColors.cont,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    };
+  }
+
+  void _detachBackendListeners(SpeechBackend b) {
+    b.recognized.removeListener(_onRecognized);
+    b.listening.removeListener(_onListeningChanged);
+    b.onError = null;
+  }
+
+  Future<void> _switchBackend(SpeechBackend b) async {
+    if (identical(b, _backend)) return;
+    // Останавливаем старый, переподключаем слушателей.
+    if (_backend.listening.value) await _backend.stop();
+    _detachBackendListeners(_backend);
+    _backend = b;
+    _attachBackendListeners(_backend);
   }
 
   @override
   void dispose() {
-    SpeechService.I.recognized.removeListener(_onRecognized);
-    SpeechService.I.listening.removeListener(_onListeningChanged);
-    SpeechService.I.onError = null;
-    SpeechService.I.stop();
+    _detachBackendListeners(_backend);
+    _backend.stop();
     _fallbackTicker?.dispose();
     _scroll.dispose();
     _hideControlsTimer?.cancel();
@@ -149,34 +188,43 @@ class _PrompterScreenState extends State<PrompterScreen>
 
   // ──────────────────────── Recognition matching ────────────────────────
 
+  // Сколько токенов из текущего recognized уже учтены матчером.
+  // Сбрасывается, если строка распознавания «сжалась» (новая сессия).
+  int _consumedRecogTokens = 0;
   String _prevRecognized = '';
 
   void _onRecognized() {
-    final fresh = SpeechService.I.recognized.value;
+    final fresh = _backend.recognized.value;
     if (fresh == _prevRecognized) return;
-    final added = fresh.length >= _prevRecognized.length &&
-            fresh.startsWith(_prevRecognized)
-        ? fresh.substring(_prevRecognized.length)
-        : fresh; // если префикс «съехал» — всё равно матчим всё новое
+    // Если строка стала короче или перестала начинаться с предыдущей,
+    // это новая сессия / сброс — пере-токенизуем с нуля.
+    if (fresh.length < _prevRecognized.length ||
+        !fresh.startsWith(_prevRecognized)) {
+      _consumedRecogTokens = 0;
+    }
     _prevRecognized = fresh;
-    _advanceByRecognized(added);
+    _advanceByRecognized(fresh);
   }
 
-  void _advanceByRecognized(String chunk) {
+  /// Берёт полный текст распознавания, токенизирует, и пропускает
+  /// первые `_consumedRecogTokens` слов — остаток жадно матчит
+  /// против исходного текста начиная с текущей позиции `_readUpTo`.
+  void _advanceByRecognized(String full) {
     final tokens = RegExp(r"[\p{L}\p{M}\p{N}'’\-]+", unicode: true)
-        .allMatches(chunk)
+        .allMatches(full)
         .map((m) => _normalize(m.group(0)!))
         .toList(growable: false);
-    if (tokens.isEmpty) return;
+    if (tokens.length <= _consumedRecogTokens) return;
 
     var pos = _readUpTo.value;
     final maxIdx = _words.length;
 
-    // Жадный поиск каждого распознанного слова в окне впереди текущей
-    // позиции. Это устойчиво к тому, что STT может проглатывать
-    // короткие предлоги/союзы.
-    const lookAhead = 12;
-    for (final t in tokens) {
+    // Жадный поиск каждого нового распознанного слова в окне впереди
+    // текущей позиции. Окно увеличено до 16 — частые «съеденные»
+    // предлоги/частицы локального STT перестают подвешивать матчер.
+    const lookAhead = 16;
+    for (var ti = _consumedRecogTokens; ti < tokens.length; ti++) {
+      final t = tokens[ti];
       if (t.isEmpty) continue;
       final hi = math.min(pos + lookAhead, maxIdx);
       var matched = -1;
@@ -190,6 +238,7 @@ class _PrompterScreenState extends State<PrompterScreen>
         pos = matched + 1;
       }
     }
+    _consumedRecogTokens = tokens.length;
 
     if (pos != _readUpTo.value) {
       _readUpTo.value = pos;
@@ -288,7 +337,7 @@ class _PrompterScreenState extends State<PrompterScreen>
   // если микрофон выключен.
   void _ensureFallbackTicker() {
     final shouldRun =
-        !SpeechService.I.listening.value && _autoScrollEnabled;
+        !_backend.listening.value && _autoScrollEnabled;
     if (shouldRun) {
       if (_fallbackTicker == null) {
         _fallbackLastTick = DateTime.now();
@@ -325,17 +374,26 @@ class _PrompterScreenState extends State<PrompterScreen>
   // ──────────────────────── Mic toggle ────────────────────────
 
   Future<void> _toggleMic() async {
-    if (SpeechService.I.listening.value) {
-      await SpeechService.I.stop();
+    if (_backend.listening.value) {
+      await _backend.stop();
       _ensureFallbackTicker();
       _scheduleAutoHide();
       return;
     }
-    // Запрос разрешения.
+    // Перепроверяем выбор бэкенда — на случай, если пользователь только
+    // что переключил его в настройках.
+    final desired = _pickBackend();
+    if (!identical(desired, _backend)) {
+      await _switchBackend(desired);
+    }
     final granted = await _ensureMicPermission();
     if (!granted) return;
     _prevRecognized = '';
-    await SpeechService.I.start(localeId: _localeId);
+    _consumedRecogTokens = 0;
+    if (_backend is LocalSpeechBackend) {
+      LocalSpeechBackend.I.localeId = _localeId;
+    }
+    await _backend.start();
     _ensureFallbackTicker();
     _scheduleAutoHide();
   }
@@ -368,7 +426,7 @@ class _PrompterScreenState extends State<PrompterScreen>
       if (!mounted) return;
       // Прячем только если идёт чтение (микрофон или fallback скролл) —
       // иначе нечего прятать.
-      if (SpeechService.I.listening.value || _fallbackTicker != null) {
+      if (_backend.listening.value || _fallbackTicker != null) {
         setState(() => _controlsVisible = false);
       } else {
         _scheduleAutoHide();
@@ -386,7 +444,8 @@ class _PrompterScreenState extends State<PrompterScreen>
   void _reset() {
     _readUpTo.value = 0;
     _prevRecognized = '';
-    SpeechService.I.recognized.value = '';
+    _consumedRecogTokens = 0;
+    _backend.clearRecognized();
     if (_scroll.hasClients) {
       _scroll.animateTo(
         0,
@@ -477,7 +536,7 @@ class _PrompterScreenState extends State<PrompterScreen>
                 opacity: _controlsVisible ? 1.0 : 0.0,
                 duration: const Duration(milliseconds: 200),
                 child: _BottomDock(
-                  listening: SpeechService.I.listening,
+                  listening: _backend.listening,
                   onToggleMic: _toggleMic,
                   onReset: _reset,
                   fontSize: _fontSize,

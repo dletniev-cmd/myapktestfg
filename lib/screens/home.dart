@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -10,7 +11,11 @@ import 'prompter.dart';
 import 'settings.dart';
 
 /// Главный экран: текстовое поле, в которое можно вставить/набрать
-/// текст для чтения, и кнопка «Начать».
+/// текст для чтения, и круглая FAB-кнопка «play» справа снизу.
+///
+/// Текст лежит «прямо на фоне», без карточки-контейнера — чтобы
+/// при скролле плавно «уходил» под верхний градиент-фейд (см.
+/// [TopFadeHeader]) и под нижнюю кнопку (см. [_BottomFade]).
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -21,7 +26,13 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   final TextEditingController _controller = TextEditingController();
   final FocusNode _focus = FocusNode();
+  // Счётчики для индикатора слов/символов — обновляются раз в ~200мс,
+  // чтобы не дёргать rebuild на каждый keystroke и не закрывать
+  // клавиатуру из-за лишних setState.
+  final ValueNotifier<_TextStats> _stats =
+      ValueNotifier<_TextStats>(_TextStats.empty);
   Timer? _saveDebounce;
+  Timer? _statsDebounce;
   bool _loaded = false;
 
   @override
@@ -33,10 +44,9 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _bootstrap() async {
     final text = await Prefs.I.getText();
     if (!mounted) return;
-    setState(() {
-      _controller.text = text;
-      _loaded = true;
-    });
+    _controller.text = text;
+    _stats.value = _TextStats.of(text);
+    setState(() => _loaded = true);
     _controller.addListener(_onChanged);
   }
 
@@ -45,14 +55,20 @@ class _HomeScreenState extends State<HomeScreen> {
     _saveDebounce = Timer(const Duration(milliseconds: 400), () {
       Prefs.I.setText(_controller.text);
     });
+    _statsDebounce?.cancel();
+    _statsDebounce = Timer(const Duration(milliseconds: 180), () {
+      _stats.value = _TextStats.of(_controller.text);
+    });
   }
 
   @override
   void dispose() {
     _saveDebounce?.cancel();
+    _statsDebounce?.cancel();
     _controller.removeListener(_onChanged);
     _controller.dispose();
     _focus.dispose();
+    _stats.dispose();
     super.dispose();
   }
 
@@ -80,6 +96,20 @@ class _HomeScreenState extends State<HomeScreen> {
     _controller.clear();
   }
 
+  Future<void> _copy() async {
+    if (_controller.text.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: _controller.text));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Скопировано',
+            style: TextStyle(color: AppColors.text)),
+        backgroundColor: AppColors.cont,
+        duration: Duration(seconds: 1),
+      ),
+    );
+  }
+
   void _openPrompter() {
     final text = _controller.text.trim();
     if (text.isEmpty) {
@@ -93,6 +123,7 @@ class _HomeScreenState extends State<HomeScreen> {
       );
       return;
     }
+    FocusScope.of(context).unfocus();
     Navigator.of(context).push(
       PageRouteBuilder(
         transitionDuration: const Duration(milliseconds: 320),
@@ -120,6 +151,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _openSettings() {
+    FocusScope.of(context).unfocus();
     Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const SettingsScreen()),
     );
@@ -128,34 +160,21 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final topInset = MediaQuery.of(context).padding.top;
-    final bottomInset =
-        MediaQuery.of(context).viewInsets.bottom +
-            MediaQuery.of(context).padding.bottom;
-    final wordCount = _controller.text
-        .split(RegExp(r'\s+'))
-        .where((w) => w.trim().isNotEmpty)
-        .length;
-    final charCount = _controller.text.length;
+    final bottomInset = MediaQuery.of(context).padding.bottom;
 
     return Scaffold(
       backgroundColor: AppColors.bg,
       resizeToAvoidBottomInset: true,
       body: Stack(
         children: [
-          // Контент.
+          // Сам редактор — на всю высоту, без карточки.
           Positioned.fill(
-            child: Padding(
-              padding: EdgeInsets.only(
-                top: topInset + 68,
-                bottom: bottomInset > 0 ? bottomInset + 96 : 96,
-              ),
-              child: _loaded
-                  ? _buildBody(wordCount, charCount)
-                  : const SizedBox.shrink(),
-            ),
+            child: _loaded
+                ? _buildEditor(topInset, bottomInset)
+                : const SizedBox.shrink(),
           ),
 
-          // Шапка с градиентом-фейдом.
+          // Верхний градиент-фейд + заголовок.
           Positioned(
             left: 0,
             right: 0,
@@ -163,7 +182,7 @@ class _HomeScreenState extends State<HomeScreen> {
             child: TopFadeHeader(
               title: 'Суфлёр',
               trailing: [
-                _HeaderIconButton(
+                CircleIconChip(
                   icon: Icons.tune_rounded,
                   onTap: _openSettings,
                 ),
@@ -171,15 +190,18 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
 
-          // Нижний док с кнопкой «Начать».
+          // Нижний градиент-фейд + плашка действий + FAB.
           Positioned(
-            left: 16,
-            right: 16,
-            bottom: 16 + MediaQuery.of(context).padding.bottom,
-            child: PrimaryButton(
-              label: 'Начать чтение',
-              icon: Icons.play_arrow_rounded,
-              onTap: _openPrompter,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: _BottomBar(
+              bottomInset: bottomInset,
+              stats: _stats,
+              onPaste: _pasteFromClipboard,
+              onClear: _clear,
+              onCopy: _copy,
+              onStart: _openPrompter,
             ),
           ),
         ],
@@ -187,161 +209,172 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildBody(int wordCount, int charCount) {
+  Widget _buildEditor(double topInset, double bottomInset) {
+    // TextField сам по себе многострочный и работает внутри
+    // SingleChildScrollView — этого достаточно для длинных текстов
+    // и для того, чтобы они уезжали под градиент сверху и под
+    // нижнюю плашку.
     return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-      keyboardDismissBehavior:
-          ScrollViewKeyboardDismissBehavior.onDrag,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // Карточка с действиями над текстом.
-          CardBox(
-            padding: const EdgeInsets.all(6),
-            child: Row(
-              children: [
-                Expanded(
-                  child: _ActionChip(
-                    icon: Icons.paste_rounded,
-                    label: 'Вставить',
-                    onTap: _pasteFromClipboard,
-                  ),
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: _ActionChip(
-                    icon: Icons.cleaning_services_rounded,
-                    label: 'Очистить',
-                    onTap: _clear,
-                  ),
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: _ActionChip(
-                    icon: Icons.copy_rounded,
-                    label: 'Копировать',
-                    onTap: () async {
-                      if (_controller.text.isEmpty) return;
-                      await Clipboard.setData(
-                          ClipboardData(text: _controller.text));
-                      if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Скопировано',
-                              style: TextStyle(color: AppColors.text)),
-                          backgroundColor: AppColors.cont,
-                          duration: Duration(seconds: 1),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-              ],
-            ),
+      // `manual` нарочно — иначе свайп по тексту во время фокуса
+      // дёргает клавиатуру (была баг-репорт).
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.manual,
+      padding: EdgeInsets.fromLTRB(
+        18,
+        topInset + 72,
+        18,
+        bottomInset + 200,
+      ),
+      child: TextField(
+        controller: _controller,
+        focusNode: _focus,
+        maxLines: null,
+        minLines: 18,
+        keyboardType: TextInputType.multiline,
+        textCapitalization: TextCapitalization.sentences,
+        cursorColor: AppColors.accent,
+        cursorWidth: 2.0,
+        style: const TextStyle(
+          fontSize: 18,
+          height: 1.45,
+          color: AppColors.text,
+          letterSpacing: -0.1,
+        ),
+        decoration: const InputDecoration(
+          border: InputBorder.none,
+          isCollapsed: true,
+          contentPadding: EdgeInsets.zero,
+          hintText:
+              'Вставь или введи текст — Суфлёр подсветит слова и '
+              'сам подскролит, пока ты читаешь вслух.',
+          hintStyle: TextStyle(
+            color: AppColors.sub,
+            fontSize: 18,
+            height: 1.45,
+            letterSpacing: -0.1,
           ),
-          const SizedBox(height: 12),
-          // Большое текстовое поле.
-          CardBox(
-            padding: const EdgeInsets.fromLTRB(14, 10, 14, 14),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    const Text(
-                      'Текст для чтения',
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.sub,
-                      ),
-                    ),
-                    const Spacer(),
-                    Text(
-                      '$wordCount сл. · $charCount зн.',
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: AppColors.sub,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                TextField(
-                  controller: _controller,
-                  focusNode: _focus,
-                  maxLines: null,
-                  minLines: 14,
-                  keyboardType: TextInputType.multiline,
-                  textCapitalization: TextCapitalization.sentences,
-                  cursorColor: AppColors.accent,
-                  style: const TextStyle(
-                    fontSize: 16,
-                    height: 1.4,
-                    color: AppColors.text,
-                  ),
-                  decoration: const InputDecoration(
-                    border: InputBorder.none,
-                    isCollapsed: true,
-                    hintText:
-                        'Вставь сюда текст, который хочешь прочитать. '
-                        'Микрофон сам подсветит слова и плавно подскролит вниз.',
-                    hintStyle: TextStyle(
-                      color: AppColors.sub,
-                      fontSize: 16,
-                      height: 1.4,
-                    ),
-                  ),
-                  onChanged: (_) => setState(() {}),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
-          // Подсказка про микрофон.
-          CardBox(
-            color: AppColors.cont,
-            padding: const EdgeInsets.symmetric(
-                horizontal: 14, vertical: 12),
-            child: Row(
-              children: [
-                Container(
-                  width: 32,
-                  height: 32,
-                  decoration: BoxDecoration(
-                    color: AppColors.accent,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  alignment: Alignment.center,
-                  child: const Icon(Icons.mic_rounded,
-                      size: 19, color: Colors.white),
-                ),
-                const SizedBox(width: 12),
-                const Expanded(
-                  child: Text(
-                    'Включи микрофон во время чтения — текст будет '
-                    'плавно прокручиваться сам.',
-                    style: TextStyle(
-                      fontSize: 13,
-                      height: 1.35,
-                      color: AppColors.text,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }
 }
 
-class _ActionChip extends StatelessWidget {
+class _TextStats {
+  final int words;
+  final int chars;
+  const _TextStats(this.words, this.chars);
+  static const empty = _TextStats(0, 0);
+  static _TextStats of(String s) {
+    final w = s
+        .split(RegExp(r'\s+'))
+        .where((p) => p.trim().isNotEmpty)
+        .length;
+    return _TextStats(w, s.length);
+  }
+}
+
+/// Нижняя плашка: градиент-фейд (под который уходит текст) + ряд
+/// chip-кнопок «Вставить / Очистить / Копировать» + круглая FAB
+/// справа.
+class _BottomBar extends StatelessWidget {
+  final double bottomInset;
+  final ValueListenable<_TextStats> stats;
+  final VoidCallback onPaste;
+  final VoidCallback onClear;
+  final VoidCallback onCopy;
+  final VoidCallback onStart;
+  const _BottomBar({
+    required this.bottomInset,
+    required this.stats,
+    required this.onPaste,
+    required this.onClear,
+    required this.onCopy,
+    required this.onStart,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+        padding: EdgeInsets.fromLTRB(
+          16,
+          22,
+          16,
+          12 + bottomInset,
+        ),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.bottomCenter,
+            end: Alignment.topCenter,
+            colors: [
+              AppColors.bg,
+              AppColors.bg.withValues(alpha: 0.94),
+              AppColors.bg.withValues(alpha: 0.74),
+              AppColors.bg.withValues(alpha: 0.42),
+              AppColors.bg.withValues(alpha: 0.16),
+              AppColors.bg.withValues(alpha: 0.0),
+            ],
+            stops: const [0.0, 0.30, 0.55, 0.75, 0.90, 1.0],
+          ),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ValueListenableBuilder<_TextStats>(
+                    valueListenable: stats,
+                    builder: (_, s, __) => Padding(
+                      padding: const EdgeInsets.only(left: 4, bottom: 8),
+                      child: Text(
+                        s.words == 0
+                            ? 'Текст для чтения'
+                            : '${s.words} сл. · ${s.chars} зн.',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: AppColors.sub,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ),
+                  Row(
+                    children: [
+                      _ChipAction(
+                        icon: Icons.paste_rounded,
+                        label: 'Вставить',
+                        onTap: onPaste,
+                      ),
+                      const SizedBox(width: 8),
+                      _ChipAction(
+                        icon: Icons.cleaning_services_rounded,
+                        label: 'Очистить',
+                        onTap: onClear,
+                      ),
+                      const SizedBox(width: 8),
+                      _ChipAction(
+                        icon: Icons.copy_rounded,
+                        label: 'Копия',
+                        onTap: onCopy,
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            _PlayFab(onTap: onStart),
+          ],
+        ),
+    );
+  }
+}
+
+class _ChipAction extends StatelessWidget {
   final IconData icon;
   final String label;
   final VoidCallback onTap;
-  const _ActionChip({
+  const _ChipAction({
     required this.icon,
     required this.label,
     required this.onTap,
@@ -351,24 +384,25 @@ class _ActionChip extends StatelessWidget {
   Widget build(BuildContext context) {
     return PressScale(
       onTap: onTap,
-      scale: 0.96,
+      scale: 0.94,
       child: Container(
-        height: 56,
+        height: 36,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
         decoration: BoxDecoration(
-          color: AppColors.cont2,
-          borderRadius: BorderRadius.circular(14),
+          color: AppColors.cont,
+          borderRadius: BorderRadius.circular(AppRadii.pill),
         ),
         alignment: Alignment.center,
-        child: Column(
+        child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, color: AppColors.text, size: 19),
-            const SizedBox(height: 3),
+            Icon(icon, color: AppColors.text, size: 16),
+            const SizedBox(width: 6),
             Text(
               label,
               style: const TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w500,
+                fontSize: 12.5,
+                fontWeight: FontWeight.w600,
                 color: AppColors.text,
               ),
             ),
@@ -379,10 +413,9 @@ class _ActionChip extends StatelessWidget {
   }
 }
 
-class _HeaderIconButton extends StatelessWidget {
-  final IconData icon;
+class _PlayFab extends StatelessWidget {
   final VoidCallback onTap;
-  const _HeaderIconButton({required this.icon, required this.onTap});
+  const _PlayFab({required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -390,14 +423,25 @@ class _HeaderIconButton extends StatelessWidget {
       onTap: onTap,
       scale: 0.92,
       child: Container(
-        width: 38,
-        height: 38,
+        width: 64,
+        height: 64,
         decoration: BoxDecoration(
-          color: AppColors.cont,
-          borderRadius: BorderRadius.circular(AppRadii.btn),
+          color: AppColors.accent,
+          shape: BoxShape.circle,
+          boxShadow: [
+            BoxShadow(
+              color: AppColors.accent.withValues(alpha: 0.32),
+              blurRadius: 16,
+              offset: const Offset(0, 6),
+            ),
+          ],
         ),
         alignment: Alignment.center,
-        child: Icon(icon, color: AppColors.text, size: 19),
+        child: const Icon(
+          Icons.play_arrow_rounded,
+          color: Colors.white,
+          size: 32,
+        ),
       ),
     );
   }
