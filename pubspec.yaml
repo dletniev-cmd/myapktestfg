@@ -1,45 +1,25 @@
-name: github_pusher
-description: "GitHub Pusher — заливай файлы, отслеживай Actions и скачивай APK прямо с телефона."
+name: suflyor
+description: "Суфлёр — мобильный телепромптер с автоматической прокруткой по голосу."
 publish_to: 'none'
-version: 1.9.15+78
+version: 1.0.0+1
 
 environment:
-  sdk: ^3.5.4
+  sdk: ^3.5.0
 
 dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.8
-  flutter_svg: ^2.0.10+1
-  http: ^1.2.2
+  # Распознавание речи через нативные движки Android/iOS — используется
+  # для авто-прокрутки текста по позиции произнесённого слова. Плагин
+  # активно поддерживается и работает поверх SpeechRecognizer на
+  # Android и SFSpeechRecognizer на iOS.
+  speech_to_text: ^7.0.0
+  # Запросы разрешения на микрофон/распознавание речи. permission_handler
+  # покрывает все нужные платформенные диалоги.
+  permission_handler: ^11.3.1
+  # Локальное хранение текстов и настроек (скорость, размер шрифта).
   shared_preferences: ^2.3.2
-  archive: ^3.6.1
-  file_picker: ^8.1.2
-  intl: ^0.19.0
-  url_launcher: ^6.3.0
-  path_provider: ^2.1.4
-  share_plus: ^10.0.2
-  photo_manager: ^3.5.2
-  flutter_local_notifications: ^17.2.1+2
-  # Lottie-стикеры (cloud / robot / bag / lock) удалены из онбординга:
-  # они давали лаги при свайпе PageView (большие .tgs JSON, тяжёлый
-  # paint анимированных путей) и визуально были «дёрганые». Теперь
-  # на онбординге используются обычные Solar SVG-иконки из
-  # assets/icons/, которые прогреваются в svg.cache на старте.
-  # crypto уже подтягивается транзитивно (http→...→crypto), фиксируем
-  # как явную зависимость, потому что используем `sha1.convert(...)`
-  # напрямую в api.pushFiles для расчёта git blob SHA локально и
-  # сравнения с remote tree — это позволяет пушить только изменённые
-  # или новые файлы, а не всё подряд.
-  crypto: ^3.0.3
-  # Material 3 Expressive Loading Indicator — официальный порт из
-  # androidx.compose.material3 на Flutter. Используется через
-  # обёртку в lib/widgets/m3_loading.dart (M3LoadingIndicator),
-  # которая drop-in заменяет CircularProgressIndicator по всему
-  # приложению. material_new_shapes даёт те же RoundedPolygon/Morph,
-  # что и Compose, поэтому формы и тайминги совпадают с M3 спекой.
-  expressive_loading_indicator: ^0.0.1
-  material_new_shapes: ^1.0.0
 
 dev_dependencies:
   flutter_test:
@@ -48,5 +28,3 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
-  assets:
-    - assets/icons/
