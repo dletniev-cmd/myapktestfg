@@ -18,22 +18,6 @@ Future<void> main() async {
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge,
       overlays: SystemUiOverlay.values);
   _applyOverlayStyle(AppState.I.isDark);
-
-  // РАСШИРЯЕМ Flutter ImageCache для скролла фото и свайпа скринов.
-  //
-  // Дефолтный ImageCache: 1000 элементов / 100 MB. Для нашего UX
-  // это мало:
-  //   • в пикере фото рендерится 300×300 растр ≈ 360 KB; при 600
-  //     фотографиях это ~210 MB — их нужно не вываливать из кеша,
-  //     иначе при прокрутке вниз/вверх растры декодируются заново
-  //     в каждом видимом кадре (это и было «лаг при скролле»).
-  //   • во вьювере скринов один скрин при 1080×2400 ≈ 10 MB растра;
-  //     дефолтные 100 MB вмещают всего ~10 скринов, и при листании
-  //     PageView'а с 15+ скринов кеш вываливает соседей precache'а
-  //     (прогрев теряется). 384 MB дают запас для обоих кейсов
-  //     без OOM даже на бюджетных Android с 2-3 GB RAM.
-  PaintingBinding.instance.imageCache.maximumSize = 4000;
-  PaintingBinding.instance.imageCache.maximumSizeBytes = 384 << 20;
   // Параллельно: грузим стейт и прогреваем кэш SVG, чтобы иконки рисовались
   // мгновенно во всех экранах без «лагов» при первом показе.
   await Future.wait<void>([
@@ -123,7 +107,7 @@ class _RootState extends State<_Root> {
         AppState.I.touch();
       },
       child: MaterialApp(
-        title: 'GitHub Pusher',
+        title: 'пушик',
         debugShowCheckedModeBanner: false,
         theme: theme,
         // AnnotatedRegion на корневом уровне, чтобы стиль системного UI
