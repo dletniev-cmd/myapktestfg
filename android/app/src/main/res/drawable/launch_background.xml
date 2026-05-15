@@ -1,12 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Modify this file to customize your launch splash screen -->
+<!--
+  Splash screen для светлой темы. Раньше тут был просто белый фон без
+  логотипа — пользователь жаловался что на сплэше показывается дефолтный
+  Flutter-логотип (это поведение Android 12+ — если launcher icon
+  привязан к ic_launcher.png, система берёт его для splash). После замены
+  ic_launcher на GitHub-octocat это уже работает корректно, но для
+  более старых Android (< 12) дополнительно явно отображаем тот же логотип
+  через bitmap-item этого layer-list.
+
+  Логотип лежит в drawable/launch_logo.png — это octocat (чёрный) на
+  прозрачном фоне 512×512, без скруглений. На сплэше Android центрирует
+  его на белом полотне.
+-->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:drawable="@android:color/white" />
-
-    <!-- You can insert your own image assets here -->
-    <!-- <item>
+    <item>
         <bitmap
             android:gravity="center"
-            android:src="@mipmap/launch_image" />
-    </item> -->
+            android:src="@drawable/launch_logo" />
+    </item>
 </layer-list>

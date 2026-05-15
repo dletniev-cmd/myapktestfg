@@ -1,12 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Modify this file to customize your launch splash screen -->
+<!--
+  Splash screen для Android 21+ (включая v21..v30). На Android 12+
+  система рисует поверх этого layer-list собственный SplashScreen API
+  с launcher icon в центре, но фон она берёт отсюда (через атрибут
+  windowSplashScreenBackground / windowBackground). На Android 5..11
+  отсюда же берётся весь сплэш.
+
+  Логика логотипа: используем drawable/launch_logo (octocat), а на
+  тёмной теме автоматически подхватится drawable-night/launch_logo.png
+  (белый octocat). Фон следует системному `colorBackground` темы —
+  белый в светлой теме, чёрный в тёмной (см. styles.xml /
+  values-night/styles.xml).
+-->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:drawable="?android:colorBackground" />
-
-    <!-- You can insert your own image assets here -->
-    <!-- <item>
+    <item>
         <bitmap
             android:gravity="center"
-            android:src="@mipmap/launch_image" />
-    </item> -->
+            android:src="@drawable/launch_logo" />
+    </item>
 </layer-list>

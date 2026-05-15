@@ -552,12 +552,21 @@ class _BdShotsGridState extends State<_BdShotsGrid> {
   /// Прекешируем картинки по очереди, чтобы декод не вылазил бурстом
   /// на GPU и UI оставался отзывчивым. Между скринами — `Future.delayed`
   /// (Duration.zero) отдаёт управление event-loop'у Flutter'а.
+  ///
+  /// КРИТИЧНО: используем стабильный `bug.imageProvider(i)` (он же
+  /// используется в `_Thumb`, `_RoundedShot` и Hero flightShuttleBuilder)
+  /// — тогда прекеш кладёт растровую копию под ТОТ ЖЕ ImageCache ключ,
+  /// и при последующем отображении (включая свайпы в ShotsViewer)
+  /// будет cache hit без передекодирования. Раньше тут было
+  /// `MemoryImage(shots[i])` — это создавало временный провайдер с другим
+  /// instance id, под которым лежала копия, не использующаяся реальным
+  /// рендером, а реальные `_Thumb`/`_RoundedShot` декодировались заново.
   Future<void> _precacheAll() async {
-    final shots = widget.bug.shots;
-    for (var i = 0; i < shots.length; i++) {
+    final bug = widget.bug;
+    for (var i = 0; i < bug.shots.length; i++) {
       if (!mounted) return;
       try {
-        await precacheImage(MemoryImage(shots[i]), context);
+        await precacheImage(bug.imageProvider(i), context);
       } catch (_) {
         // если декод упал — пропускаем, всё равно покажем сетку.
       }
@@ -659,11 +668,16 @@ class _Thumb extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Стабильный ImageProvider из BugItem — ImageCache использует его
+    // identity для поиска растровой копии картинки. Один и тот же
+    // provider переиспользуется здесь, во время Hero-полёта и в полно-
+    // экранном вьювере — без повторного декода.
+    final provider = bug.imageProvider(index);
     return GestureDetector(
       onTap: () {
         Navigator.of(context).push(
           ShotsViewerRoute(
-            shots: bug.shots,
+            bug: bug,
             initialIndex: index,
             heroTagBuilder: (i) =>
                 'bug_${heroTag.split('_shot_').first.split('_').last}_shot_$i',
@@ -678,8 +692,8 @@ class _Thumb extends StatelessWidget {
         // пересбираются на каждый кадр полёта (это давало flicker в v51).
         // Меняется только радиус ClipRRect.
         flightShuttleBuilder: (_, anim, dir, __, ___) {
-          final imgChild = Image.memory(
-            bug.shots[index],
+          final imgChild = Image(
+            image: provider,
             fit: BoxFit.cover,
             filterQuality: FilterQuality.medium,
             gaplessPlayback: true,
@@ -698,8 +712,8 @@ class _Thumb extends StatelessWidget {
         },
         child: ClipRRect(
           borderRadius: BorderRadius.circular(10),
-          child: Image.memory(
-            bug.shots[index],
+          child: Image(
+            image: provider,
             width: side,
             height: side,
             fit: BoxFit.cover,
@@ -713,37 +727,42 @@ class _Thumb extends StatelessWidget {
 }
 
 class _RoundedShot extends StatelessWidget {
-  final Uint8List bytes;
+  final ImageProvider provider;
   final BoxFit fit;
   final double radius;
   const _RoundedShot({
-    required this.bytes,
+    required this.provider,
     required this.fit,
     required this.radius,
   });
   @override
   Widget build(BuildContext context) {
-    // Юзер (баг n9225): «лагает свайпанье скринов» в полноэкранном
-    // вьювере. Причина — PageView держит 3 страницы одновременно, на
-    // каждой Image.memory декодит ПОЛНОРАЗМЕРНЫЙ PNG (1-3 МБ, ~1080×~2400),
-    // и Skia рендерит его в кадр, в котором всё равно физически ~412×~915
-    // dp. То есть мы декодим раз в 2-3 больше пикселей, чем рисуем, и
-    // это бьёт по UI-треду при каждом свайпе.
+    // Юзер (баг n9225 и повторные жалобы): «лагает свайпанье скринов»
+    // в полноэкранном вьювере. Две критических причины:
     //
-    // Фикс — `cacheWidth` подсказывает движку декодировать картинку
-    // сразу в размер вьюпорта (учитывая devicePixelRatio). Декод
-    // быстрее, текстура меньше, GPU upload тоже легче. Качество визуально
-    // не страдает: мы всё равно не делаем зум.
-    final media = MediaQuery.of(context);
-    final cacheW = (media.size.width * media.devicePixelRatio).round();
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(radius),
-      child: Image.memory(
-        bytes,
-        fit: fit,
-        filterQuality: FilterQuality.medium,
-        gaplessPlayback: true,
-        cacheWidth: cacheW,
+    // 1) `Image.memory(bytes)` на каждый build создавал НОВЫЙ
+    //    `MemoryImage(bytes)`. Потом этот провайдер ещё оборачивался в
+    //    `ResizeImage` из-за `cacheWidth`. Из-за оборачивания ключ
+    //    ImageCache расходился с тем, под которым flightShuttleBuilder
+    //    кэшировал «full-res» версию — итого два декода на картинку.
+    //    Теперь `provider` — это стабильный instance из
+    //    `BugItem.imageProvider(i)`, общий для всех использований
+    //    (тамбнейл, hero, page) — cache hit гарантирован.
+    //
+    // 2) `ClipRRect > Image.memory` — ClipRRect делает saveLayer/clip/
+    //    restore на КАЖДЫЙ кадр (включая каждый кадр движения PageView).
+    //    Сами же картинки обрабатываются как `Container > BoxDecoration
+    //    (image: DecorationImage(...), borderRadius: ...)` — один draw call
+    //    без saveLayer (тот же приём, что в _PhotoCell в photo_picker_sheet).
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.black,
+        borderRadius: BorderRadius.circular(radius),
+        image: DecorationImage(
+          image: provider,
+          fit: fit,
+          filterQuality: FilterQuality.medium,
+        ),
       ),
     );
   }
@@ -760,12 +779,12 @@ class _RoundedShot extends StatelessWidget {
 ///   за «появление» отвечает Hero (миниатюра → полный экран) и наш
 ///   собственный backdrop, который завязан на route.animation.
 class ShotsViewerRoute<T> extends PageRoute<T> with NoSlideOnPush {
-  final List<Uint8List> shots;
+  final BugItem bug;
   final int initialIndex;
   final String Function(int index) heroTagBuilder;
 
   ShotsViewerRoute({
-    required this.shots,
+    required this.bug,
     required this.initialIndex,
     required this.heroTagBuilder,
   });
@@ -789,7 +808,7 @@ class ShotsViewerRoute<T> extends PageRoute<T> with NoSlideOnPush {
   Widget buildPage(BuildContext context, Animation<double> animation,
       Animation<double> secondaryAnimation) {
     return ShotsViewer(
-      shots: shots,
+      bug: bug,
       initialIndex: initialIndex,
       heroTagBuilder: heroTagBuilder,
       routeAnimation: animation,
@@ -812,13 +831,13 @@ class ShotsViewerRoute<T> extends PageRoute<T> with NoSlideOnPush {
 ///   InteractiveViewer — иногда конфликтовал с drag-to-close и свайпом
 ///   между страницами; по желанию юзера убран полностью).
 class ShotsViewer extends StatefulWidget {
-  final List<Uint8List> shots;
+  final BugItem bug;
   final int initialIndex;
   final String Function(int index) heroTagBuilder;
   final Animation<double> routeAnimation;
   const ShotsViewer({
     super.key,
-    required this.shots,
+    required this.bug,
     required this.initialIndex,
     required this.heroTagBuilder,
     required this.routeAnimation,
@@ -829,27 +848,9 @@ class ShotsViewer extends StatefulWidget {
 
 class _ShotsViewerState extends State<ShotsViewer>
     with TickerProviderStateMixin {
-  // Индекс текущей страницы. Хранится как ValueNotifier (а не поле
-  // + setState), чтобы листание в PageView НЕ дёргало setState
-  // этого State'а — иначе на каждый onPageChanged перестраивается
-  // весь виджет ShotsViewer (PageView, 3 страницы, 3 Hero, 3
-  // Image.memory, backdrop, GestureDetector…) — и это давало
-  // видимый jank НА САМОМ СВАЙПЕ между скринами. С ValueNotifier
-  // перестраивается ТОЛЬКО счётчик «1 / N» (это виджет с Text
-  // внутри ValueListenableBuilder ниже), а PageView/Hero/Image
-  // в дереве живут стабильно.
-  late final ValueNotifier<int> _indexN =
-      ValueNotifier<int>(widget.initialIndex);
+  late int _index = widget.initialIndex;
   late final PageController _pc =
       PageController(initialPage: widget.initialIndex);
-  // Кашированное дерево PageView — строится один раз в initState.
-  // Избегаем реконструкции всех itemBuilder-кложур при любом
-  // ребилде экрана (например при hot-reload или inherited-rebuild).
-  late final Widget _pageViewCached = _buildPageView();
-  // Защита от двойного шедулинга precache. Если несколько фреймов
-  // подряд триггерят didChangeDependencies (например, при первом
-  // открытии экрана), мы хотим один post-frame прогрев на (init).
-  bool _initialPrecacheScheduled = false;
   // ValueNotifier вместо обычного поля + setState — без него каждый
   // pixel движения пальца пересобирал бы всё дерево виджетов вьюера
   // (PageView, Hero, ColoredBox, счётчик и т.д.). Через notifier
@@ -894,65 +895,6 @@ class _ShotsViewerState extends State<ShotsViewer>
       final p = Curves.easeOutCubic.transform(_snapCtl.value);
       _dragV.value = Offset.lerp(_snapFrom, Offset.zero, p) ?? Offset.zero;
     });
-    // Слушаем _indexN, чтобы precache-around соседей срабатывал
-    // без setState (в прошлой версии было setState→build→вся картинка
-    // виджетов реконструируется).
-    _indexN.addListener(_onIndexChanged);
-  }
-
-  void _onIndexChanged() {
-    // Каждое листание — снова показываем счётчик и перезапускаем
-    // таймер скрытия, плюс прогреваем соседние страницы.
-    _bumpVisibility();
-    _precacheAround(_indexN.value);
-  }
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    // Первый прогрев — после первого фрейма, когда MediaQuery уже доступна
-    // и context привязан к дереву.
-    if (_initialPrecacheScheduled) return;
-    _initialPrecacheScheduled = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      _precacheAround(_indexN.value);
-    });
-  }
-
-  /// Прогревает Flutter image cache для текущей и СОСЕДНИХ страниц
-  /// PageView'а с тем же `cacheWidth`, который использует `_RoundedShot`.
-  ///
-  /// Почему именно `ResizeImage(MemoryImage(bytes), width: cacheW)`:
-  /// `Image.memory(bytes, cacheWidth: w)` под капотом превращается в
-  /// `ResizeImage.resizeIfNeeded(w, null, MemoryImage(bytes))`, и его
-  /// cache key в `ImageCache` — это пара `(ResizeImage, width, height,
-  /// policy)`. Если прогрев и фактическая отрисовка использовали
-  /// провайдеры с РАЗНЫМИ ключами (например, `MemoryImage(bytes)` против
-  /// `Image.memory(bytes, cacheWidth: w)`) — это два разных entry, и
-  /// прогрев не помогает: при свайпе в новую страницу декод стартует
-  /// прямо в кадре свайпа, и юзер видит подёргивание.
-  ///
-  /// Декодирование выполняется на отдельном раннер-изоляте Skia, но
-  /// диспатч/декодинг даёт фрейм-задержку до первого raster'а. Заранее
-  /// прогревая ±1 страницу, мы гарантируем что к моменту свайпа
-  /// картинка уже декодирована и фактическая отрисовка ничего нового
-  /// в UI-тред не приносит.
-  void _precacheAround(int center) {
-    if (!mounted) return;
-    final media = MediaQuery.of(context);
-    final cacheW = (media.size.width * media.devicePixelRatio).round();
-    for (final i in <int>[center - 1, center, center + 1]) {
-      if (i < 0 || i >= widget.shots.length) continue;
-      final provider = ResizeImage(
-        MemoryImage(widget.shots[i]),
-        width: cacheW,
-      );
-      // .catchError(_) на случай если декод упал (битые байты) —
-      // это не должно валить вьюер; страница покажет онэррор-плейсхолдер
-      // через стандартный image-error handling.
-      precacheImage(provider, context).catchError((_) {});
-    }
   }
 
   void _onRouteStatus(AnimationStatus s) {
@@ -976,8 +918,6 @@ class _ShotsViewerState extends State<ShotsViewer>
   void dispose() {
     _hideTimer?.cancel();
     widget.routeAnimation.removeStatusListener(_onRouteStatus);
-    _indexN.removeListener(_onIndexChanged);
-    _indexN.dispose();
     _counterCtl.dispose();
     _snapCtl.dispose();
     _pc.dispose();
@@ -990,84 +930,6 @@ class _ShotsViewerState extends State<ShotsViewer>
   // Прогресс drag-смахивания 0..1 для затухания фона/масштаба фотки.
   double _dragProgress(Offset drag, Size size) =>
       (drag.dy.abs() / (size.height * 0.5)).clamp(0.0, 1.0);
-
-  /// Строит сам PageView один раз — этот виджет потом переиспользуется
-  /// в build() через `_pageViewCached`. Главный выигрыш: itemBuilder-
-  /// кложуры и onPageChanged-кложура создаются ОДИН раз вообще,
-  /// а не на каждый ShotsViewer.build (который раньше дёргался на
-  /// каждый onPageChanged).
-  Widget _buildPageView() {
-    return PageView.builder(
-      controller: _pc,
-      // BouncingScrollPhysics в PageView: плавные fling-жесты и
-      // врождённый «боунс» на краях (первая/последняя страница) —
-      // пользователь видит физичный отклик, а не жёсткий стоп.
-      physics: const BouncingScrollPhysics(),
-      itemCount: widget.shots.length,
-      onPageChanged: (i) {
-        // Обновляем индекс ЧЕРЕЗ ValueNotifier — без setState.
-        // Прогрев соседей и показ счётчика вызывает _onIndexChanged,
-        // подписанный на _indexN в initState.
-        _indexN.value = i;
-      },
-      itemBuilder: (_, i) {
-        // Полноэкранный режим: скрин занимает весь экран. Углы
-        // остаются скруглёнными (радиус 18) — во время Hero-полёта
-        // плавно интерполируются 10 → 18, чтобы переход с миниатюры
-        // был без скачка радиуса.
-        //
-        // RepaintBoundary вокруг каждой страницы: когда PageView во
-        // время свайпа транслирует соседние страницы, их paint-слои
-        // лежат в отдельных layer'ах и композитор просто передвигает
-        // их на GPU. Без RepaintBoundary Skia пытается перерисовать
-        // ячейку в общем слое каждый кадр swipe'а.
-        //
-        // ВАЖНО: и shuttle, и destination используют ТОТ ЖЕ
-        // Image-instance, переданный через AnimatedBuilder.child,
-        // чтобы Image-widget на каждый кадр полёта НЕ переподписывался
-        // на ImageStream и не было визуального флика на стыке кадров.
-        return RepaintBoundary(
-          child: Hero(
-            tag: widget.heroTagBuilder(i),
-            createRectTween: (a, b) => RectTween(begin: a, end: b),
-            flightShuttleBuilder: (ctx, anim, dir, __, ___) {
-              // В shuttle добавляем cacheWidth, чтобы использовался
-              // тот же растр из ImageCache что и _RoundedShot.
-              // Без cacheWidth Hero-полёт декодировал бы полный
-              // размер изображения во время своего первого кадра
-              // (выбрасывалбы 1-2 кадра на старте полёта).
-              final media = MediaQuery.of(ctx);
-              final cw =
-                  (media.size.width * media.devicePixelRatio).round();
-              final imgChild = Image.memory(
-                widget.shots[i],
-                fit: BoxFit.cover,
-                filterQuality: FilterQuality.medium,
-                gaplessPlayback: true,
-                cacheWidth: cw,
-              );
-              return AnimatedBuilder(
-                animation: anim,
-                child: imgChild,
-                builder: (_, child) {
-                  final r = 10 + (18 - 10) * anim.value;
-                  return ClipRRect(
-                    borderRadius: BorderRadius.circular(r),
-                    child: child,
-                  );
-                },
-              );
-            },
-            child: _RoundedShot(
-              bytes: widget.shots[i],
-              fit: BoxFit.cover,
-              radius: 18,
-            ),
-          ),
-        );
-      },
-    );
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -1126,17 +988,69 @@ class _ShotsViewerState extends State<ShotsViewer>
             ),
           ),
           // PageView со скринами + жесты свайпа на закрытие.
-          // PageView строится один раз (`_pageViewCached` лениво
-          // инициализуется вызовом `_buildPageView()`) и переиспользуется
-          // как `child` ValueListenableBuilder'a — на каждый кадр drag'a
-          // меняется только Transform-матрица, а PageView/Hero/Image
-          // НЕ перестраиваются.
+          // PageView строится один раз и кэшируется как `child`
+          // ValueListenableBuilder'a — на каждый кадр drag'a меняется
+          // только Transform-матрица.
           //
           // Зум убран полностью — остался только drag-to-close + свайпы
           // между фотками внутри PageView.
           ValueListenableBuilder<Offset>(
             valueListenable: _dragV,
-            child: _pageViewCached,
+            child: PageView.builder(
+              controller: _pc,
+              itemCount: widget.bug.shots.length,
+              // BouncingScrollPhysics — на iOS-стиле боунс ощущается
+              // плавнее. На Android'е дефолтный ClampingScrollPhysics
+              // даёт «жёсткий» отбойник у краёв; bouncing симметричнее
+              // и легче для UI-треда при fling'е.
+              physics: const BouncingScrollPhysics(),
+              onPageChanged: (i) {
+                setState(() => _index = i);
+                // Каждое листание — снова показываем счётчик и
+                // перезапускаем таймер скрытия.
+                _bumpVisibility();
+              },
+              itemBuilder: (_, i) {
+                // Полноэкранный режим: скрин занимает весь экран. Углы
+                // остаются скруглёнными (радиус 18) — во время Hero-полёта
+                // плавно интерполируются 10 → 18, чтобы переход с миниатюры
+                // был без скачка радиуса.
+                //
+                // ВАЖНО: и shuttle, и destination используют ТОТ ЖЕ
+                // ImageProvider из BugItem.imageProvider(i) — Flutter
+                // ImageCache находит уже декодированную растровую копию
+                // и переиспользует её, без лишних JPEG-декодов.
+                final provider = widget.bug.imageProvider(i);
+                return Hero(
+                  tag: widget.heroTagBuilder(i),
+                  createRectTween: (a, b) => RectTween(begin: a, end: b),
+                  flightShuttleBuilder: (_, anim, dir, __, ___) {
+                    final imgChild = Image(
+                      image: provider,
+                      fit: BoxFit.cover,
+                      filterQuality: FilterQuality.medium,
+                      gaplessPlayback: true,
+                    );
+                    return AnimatedBuilder(
+                      animation: anim,
+                      child: imgChild,
+                      builder: (_, child) {
+                        final r = 10 + (18 - 10) * anim.value;
+                        return ClipRRect(
+                          borderRadius: BorderRadius.circular(r),
+                          child: child,
+                        );
+                      },
+                    );
+                  },
+                  child: _RoundedShot(
+                    provider: provider,
+                    fit: BoxFit.cover,
+                    radius: 18,
+                  ),
+                );
+              },
+            ),
             builder: (_, drag, child) {
               // Чистый Transform — без AnimatedContainer и его
               // BoxDecorationTween/Matrix4Tween-пайплайна, который
@@ -1196,7 +1110,7 @@ class _ShotsViewerState extends State<ShotsViewer>
           //   • через 2 сек простоя — плавный fade-out (280мс).
           // На свайпе закрытия дополнительно домножаем на (1-t), чтобы
           // счётчик плавно растворялся вместе с фоном.
-          if (widget.shots.length > 1)
+          if (widget.bug.shots.length > 1)
             Positioned(
               top: MediaQuery.of(context).viewPadding.top + 8,
               left: 0,
@@ -1209,15 +1123,12 @@ class _ShotsViewerState extends State<ShotsViewer>
                       padding: const EdgeInsets.symmetric(
                           horizontal: 14, vertical: 8),
                       circle: false,
-                      child: ValueListenableBuilder<int>(
-                        valueListenable: _indexN,
-                        builder: (_, idx, __) => Text(
-                          '${idx + 1} / ${widget.shots.length}',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                          ),
+                      child: Text(
+                        '${_index + 1} / ${widget.bug.shots.length}',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                     ),
