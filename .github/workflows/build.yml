@@ -26,12 +26,8 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          # Используем последнюю stable-версию Flutter из stable канала:
-          # в каждом релизе Impeller получает оптимизации производительности,
-          # а dart pkg:flutter — фиксы для анимаций (особенно
-          # SlideTransition и AnimatedSwitcher). Закреплённый 3.24.5 на
-          # момент v81 уже устарел.
           channel: stable
+          flutter-version: '3.27.1'
           cache: true
 
       - name: Show versions
@@ -47,11 +43,6 @@ jobs:
         run: flutter analyze --no-fatal-infos --no-fatal-warnings || true
 
       - name: Configure release signing
-        # Релизная подпись опциональна: если в репозитории заданы
-        # GitHub Secrets KEYSTORE_BASE64 + KEYSTORE_PASSWORD (+ KEY_ALIAS,
-        # KEY_PASSWORD по желанию) — раскладываем keystore и key.properties,
-        # и APK подписывается релизным ключом. Иначе билд продолжается с
-        # debug-подписью (как было раньше) — для CI-превью этого достаточно.
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -72,12 +63,17 @@ jobs:
           fi
 
       - name: Build release APK
-        run: flutter build apk --release --no-tree-shake-icons
+        run: flutter build apk --release
+
+      - name: Rename APK
+        run: |
+          mkdir -p artifacts
+          cp build/app/outputs/flutter-apk/app-release.apk artifacts/suflyor-release.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: github-pusher-release-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
+          name: suflyor-release-apk
+          path: artifacts/suflyor-release.apk
           if-no-files-found: error
           retention-days: 90
