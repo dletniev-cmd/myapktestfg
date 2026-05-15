@@ -8,7 +8,7 @@
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32"/>
     <application
-        android:label="github_pusher"
+        android:label="пушик"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

@@ -443,7 +443,7 @@ class _OnboardingHero extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(
-                'GitHub Pusher',
+                'пушик',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   fontSize: 22,
